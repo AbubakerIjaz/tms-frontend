@@ -1,0 +1,200 @@
+import { useCallback, useEffect, useState } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
+import { Users, ClipboardList, Package, TrendingUp, TrendingDown, Sparkles } from 'lucide-react'
+import { api } from '../lib/api'
+import { clientOrderUrl } from '../lib/navigation'
+import {
+  buildFilteredUrl,
+  currentMonthRange,
+  dateRangeToParams,
+  formatDateRangeLabel,
+  isDateRangeActive,
+  useDateRangeFilter,
+} from '../lib/listing'
+import { useAuth } from '../context/AuthContext'
+import type { DashboardData } from '../types'
+import { Card, CardBody, CardHeader } from '../components/ui/Card'
+import { DateRangeFilter } from '../components/ui/DateRangeFilter'
+import { Badge, formatCurrency, formatDate, LoadingSpinner } from '../components/ui/Badge'
+import type { LucideIcon } from 'lucide-react'
+import type { DateRange } from '../lib/listing'
+
+const statStyles = [
+  { card: 'stat-card-indigo', icon: 'text-brand-600 bg-white/80 shadow-sm' },
+  { card: 'stat-card-gold', icon: 'text-accent-600 bg-white/80 shadow-sm' },
+  { card: 'stat-card-emerald', icon: 'text-emerald-600 bg-white/80 shadow-sm' },
+  { card: 'stat-card-emerald', icon: 'text-emerald-600 bg-white/80 shadow-sm' },
+  { card: 'stat-card-rose', icon: 'text-rose-600 bg-white/80 shadow-sm' },
+  { card: 'stat-card-indigo', icon: 'text-brand-600 bg-white/80 shadow-sm' },
+]
+
+function dueSectionTitle(range: DateRange) {
+  return isDateRangeActive(range) ? 'Due in Period' : 'Due This Week'
+}
+
+export function DashboardPage() {
+  const navigate = useNavigate()
+  const { user } = useAuth()
+  const { dateRange, setDateRange } = useDateRangeFilter(currentMonthRange())
+  const [data, setData] = useState<DashboardData | null>(null)
+  const [loading, setLoading] = useState(true)
+  const currency = user?.shop?.currency || 'PKR'
+
+  const load = useCallback(() => {
+    setLoading(true)
+    api
+      .get<DashboardData>('/dashboard', { params: dateRangeToParams(dateRange) })
+      .then((res) => setData(res.data))
+      .finally(() => setLoading(false))
+  }, [dateRange])
+
+  useEffect(() => {
+    load()
+  }, [load])
+
+  if (loading && !data) return <LoadingSpinner />
+  if (!data) return null
+
+  const stats: { label: string; value: string | number; icon: LucideIcon; to: string }[] = [
+    { label: 'Total Clients', value: data.stats.total_clients, icon: Users, to: buildFilteredUrl('/clients', dateRange) },
+    {
+      label: 'Pending Orders',
+      value: data.stats.pending_orders,
+      icon: ClipboardList,
+      to: buildFilteredUrl('/orders', dateRange, { status: 'pending,in_progress' }),
+    },
+    {
+      label: 'Ready to Deliver',
+      value: data.stats.ready_orders,
+      icon: Package,
+      to: buildFilteredUrl('/orders', dateRange, { status: 'ready' }),
+    },
+    {
+      label: 'Income',
+      value: formatCurrency(data.stats.month_income, currency),
+      icon: TrendingUp,
+      to: buildFilteredUrl('/accounts', dateRange, { type: 'income' }),
+    },
+    {
+      label: 'Expense',
+      value: formatCurrency(data.stats.month_expense, currency),
+      icon: TrendingDown,
+      to: buildFilteredUrl('/accounts', dateRange, { type: 'expense' }),
+    },
+    {
+      label: 'Profit',
+      value: formatCurrency(data.stats.month_profit, currency),
+      icon: TrendingUp,
+      to: buildFilteredUrl('/accounts', dateRange),
+    },
+  ]
+
+  const periodHint = formatDateRangeLabel(dateRange) || 'all time'
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <h2 className="page-heading">Dashboard</h2>
+          <p className="page-subtitle">
+            Welcome back, {user?.name?.split(' ')[0]} — overview for {periodHint}
+          </p>
+        </div>
+        <div className="flex w-full max-w-full items-center gap-2 rounded-full border border-accent-200/60 bg-gradient-to-r from-accent-50 to-brand-50 px-3 py-2 text-xs font-medium text-brand-800 sm:w-auto sm:px-4 sm:text-sm">
+          <Sparkles size={16} className="shrink-0 text-accent-500" />
+          <span className="truncate">{user?.shop?.name}</span>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-slate-200/90 bg-white p-4 shadow-sm">
+        <DateRangeFilter
+          value={dateRange}
+          onChange={setDateRange}
+          label="Overview period"
+        />
+      </div>
+
+      <div className={`grid gap-4 sm:grid-cols-2 lg:grid-cols-3 ${loading ? 'opacity-60' : ''}`}>
+        {stats.map((stat, i) => (
+          <Link
+            key={stat.label}
+            to={stat.to}
+            className={`${statStyles[i].card} block rounded-2xl border p-5 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400 focus-visible:ring-offset-2`}
+          >
+            <div className="flex items-center gap-4">
+              <div className={`rounded-xl p-3 ${statStyles[i].icon}`}>
+                <stat.icon size={22} />
+              </div>
+              <div>
+                <p className="text-sm font-medium text-slate-600">{stat.label}</p>
+                <p className="text-xl font-bold text-surface-900">{stat.value}</p>
+              </div>
+            </div>
+          </Link>
+        ))}
+      </div>
+
+      <div className={`grid gap-6 lg:grid-cols-2 ${loading ? 'opacity-60' : ''}`}>
+        <Card>
+          <CardHeader
+            title="Recent Orders"
+            action={<Link to={buildFilteredUrl('/orders', dateRange)} className="text-sm font-medium text-brand-600 hover:text-brand-700">View all →</Link>}
+          />
+          <CardBody className="!p-0">
+            {data.recent_orders.length === 0 ? (
+              <p className="px-5 py-8 text-center text-sm text-slate-400">No orders in this period</p>
+            ) : (
+              <div className="divide-y divide-slate-100">
+                {data.recent_orders.map((order) => (
+                  <button
+                    key={order.id}
+                    type="button"
+                    onClick={() => navigate(clientOrderUrl(order.client_id, order.id))}
+                    className="flex w-full items-center justify-between px-5 py-3.5 text-left transition-colors hover:bg-brand-50/30"
+                  >
+                    <div>
+                      <p className="font-medium text-brand-700">{order.order_number}</p>
+                      <p className="text-sm text-slate-500">{order.client?.name}</p>
+                    </div>
+                    <div className="text-right">
+                      <Badge status={order.status} />
+                      <p className="mt-1 text-sm text-slate-500">{formatDate(order.order_date)}</p>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </CardBody>
+        </Card>
+
+        <Card>
+          <CardHeader title={dueSectionTitle(dateRange)} />
+          <CardBody className="!p-0">
+            {data.upcoming_due.length === 0 ? (
+              <p className="px-5 py-8 text-center text-sm text-slate-400">
+                {isDateRangeActive(dateRange) ? 'No deadlines in this period' : 'No upcoming deadlines'}
+              </p>
+            ) : (
+              <div className="divide-y divide-slate-100">
+                {data.upcoming_due.map((order) => (
+                  <button
+                    key={order.id}
+                    type="button"
+                    onClick={() => navigate(clientOrderUrl(order.client_id, order.id))}
+                    className="flex w-full items-center justify-between px-5 py-3.5 text-left transition-colors hover:bg-accent-50/30"
+                  >
+                    <div>
+                      <p className="font-medium text-slate-900">{order.client?.name}</p>
+                      <p className="text-sm text-brand-600">{order.order_number}</p>
+                    </div>
+                    <p className="text-sm font-semibold text-accent-600">{formatDate(order.due_date)}</p>
+                  </button>
+                ))}
+              </div>
+            )}
+          </CardBody>
+        </Card>
+      </div>
+    </div>
+  )
+}
