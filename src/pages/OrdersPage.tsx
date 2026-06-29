@@ -1,8 +1,7 @@
-import { useCallback, useEffect, useState } from 'react'
-import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Plus, ClipboardList } from 'lucide-react'
 import { api, getErrorMessage } from '../lib/api'
-import { clientOrderUrl } from '../lib/navigation'
 import { createOrderCreatedWhatsAppPrompt, createOrderReadyWhatsAppPrompt } from '../lib/orderWhatsAppNotifications'
 import { isWhatsAppEnabled } from '../lib/whatsappSettings'
 import { sanitizePkPhoneNumber } from '../lib/whatsapp'
@@ -21,20 +20,29 @@ import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
 import { Select } from '../components/ui/Select'
 import { Textarea } from '../components/ui/Textarea'
-import { Card } from '../components/ui/Card'
 import { Modal } from '../components/ui/Modal'
 import { ListingToolbar } from '../components/ui/ListingToolbar'
 import { Pagination } from '../components/ui/Pagination'
 import { PageScroll } from '../components/ListingPageLayout'
-import { EmptyState, formatCurrency, formatDate, LoadingSpinner } from '../components/ui/Badge'
-import { OrderRowActions } from '../components/OrderRowActions'
+import { EmptyState, formatCurrency, LoadingSpinner } from '../components/ui/Badge'
 import {
   WhatsAppOrderMessageModal,
   type WhatsAppOrderPrompt,
 } from '../components/WhatsAppOrderMessageModal'
+import { ColumnVisibility } from '../components/ui/ColumnVisibility'
+import { DataTable, ListingTableCard } from '../components/ui/DataTable'
+import { useTableColumns } from '../hooks/useTableColumns'
+import { createOrderTableColumns } from '../components/tables/ordersTable'
+import { MultiImageUpload } from '../components/orders/MultiImageUpload'
+import { OrderDetailModal } from '../components/OrderDetailModal'
+import { OrderSuitItemsEditor, createDefaultSuitItems } from '../components/orders/OrderSuitItemsEditor'
+import { appendOrderImagesToFormData, suitDraftsToPayload } from '../lib/orderForm'
+import type { OrderSuitDraft } from '../types'
+import { useZodForm } from '../hooks/useZodForm'
+import { orderCreateFormSchema, paymentAmountSchema } from '../lib/validation'
+import { useShopFeatures } from '../hooks/useShopFeatures'
 
 export function OrdersPage() {
-  const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const { user } = useAuth()
   const currency = user?.shop?.currency || 'PKR'
@@ -59,9 +67,18 @@ export function OrdersPage() {
   const [paymentAmount, setPaymentAmount] = useState('')
   const [whatsAppPrompt, setWhatsAppPrompt] = useState<WhatsAppOrderPrompt | null>(null)
   const [form, setForm] = useState({
-    client_id: '', design_id: '', garment_type_id: '', total_amount: '', paid_amount: '',
+    client_id: '', total_amount: '', paid_amount: '',
     order_date: new Date().toISOString().split('T')[0], due_date: '', notes: '', record_payment: true,
   })
+  const [suitItems, setSuitItems] = useState<OrderSuitDraft[]>(createDefaultSuitItems)
+  const [orderImages, setOrderImages] = useState<File[]>([])
+  const [viewOrder, setViewOrder] = useState<Order | null>(null)
+  const [openInEditMode, setOpenInEditMode] = useState(false)
+  const orderValidation = useZodForm(orderCreateFormSchema)
+  const paymentValidation = useZodForm(paymentAmountSchema)
+  const { isModuleEnabled } = useShopFeatures()
+  const showDesigns = isModuleEnabled('designs')
+  const showGarmentTypes = isModuleEnabled('garmentTypes')
 
   const load = useCallback(() => {
     setLoading(true)
@@ -86,23 +103,59 @@ export function OrdersPage() {
   }, [statusFilter, paymentFilter, searchQuery, dateRange.from, dateRange.to])
 
   async function openModal() {
-    const [clientsRes, designsRes, typesRes] = await Promise.all([
-      api.get<Paginated<Client>>('/clients'),
-      api.get<Paginated<Design>>('/designs'),
-      api.get<GarmentType[]>('/garment-types'),
-    ])
-    setClients(clientsRes.data.data)
-    setDesigns(designsRes.data.data)
-    setGarmentTypes(typesRes.data)
+    const requests: Promise<unknown>[] = [
+      api.get<Paginated<Client>>('/clients', { params: { per_page: 200 } }),
+    ]
+    if (showDesigns) {
+      requests.push(api.get<Paginated<Design>>('/designs', { params: { per_page: 200 } }))
+    }
+    if (showGarmentTypes) {
+      requests.push(api.get<GarmentType[]>('/garment-types'))
+    }
+    const results = await Promise.all(requests)
+    setClients((results[0] as { data: Paginated<Client> }).data.data)
+    let i = 1
+    if (showDesigns) {
+      setDesigns((results[i++] as { data: Paginated<Design> }).data.data)
+    } else {
+      setDesigns([])
+    }
+    if (showGarmentTypes) {
+      setGarmentTypes((results[i] as { data: GarmentType[] }).data)
+    } else {
+      setGarmentTypes([])
+    }
+    setSuitItems(createDefaultSuitItems())
+    setOrderImages([])
+    setError('')
     setModalOpen(true)
   }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    const data = orderValidation.validate(form)
+    if (!data) return
     setSaving(true)
     setError('')
     try {
-      const res = await api.post<Order>('/orders', { ...form, record_payment: form.record_payment })
+      const fd = new FormData()
+      fd.append('client_id', data.client_id)
+      fd.append('total_amount', data.total_amount)
+      fd.append('paid_amount', data.paid_amount || '0')
+      fd.append('order_date', data.order_date)
+      if (data.due_date) fd.append('due_date', data.due_date)
+      if (data.notes) fd.append('notes', data.notes)
+      fd.append('record_payment', form.record_payment ? '1' : '0')
+
+      const itemsPayload = suitDraftsToPayload(suitItems)
+      fd.append('items', JSON.stringify(itemsPayload))
+
+      if (suitItems[0]?.design_id) fd.append('design_id', suitItems[0].design_id)
+      if (suitItems[0]?.garment_type_id) fd.append('garment_type_id', suitItems[0].garment_type_id)
+
+      appendOrderImagesToFormData(fd, orderImages)
+
+      const res = await api.post<Order>('/orders', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
       setModalOpen(false)
       const created = res.data
       const client = clients.find((c) => String(c.id) === form.client_id)
@@ -117,10 +170,38 @@ export function OrdersPage() {
     }
   }
 
+  function openOrderModal(order: Order) {
+    setOpenInEditMode(false)
+    api.get<Order>(`/orders/${order.id}`).then((res) => setViewOrder(res.data))
+  }
+
+  function editOrderModal(order: Order) {
+    setOpenInEditMode(true)
+    api.get<Order>(`/orders/${order.id}`).then((res) => setViewOrder(res.data))
+  }
+
+  function closeOrderModal() {
+    setViewOrder(null)
+    setOpenInEditMode(false)
+  }
+
+  function handleOrderUpdated(order: Order) {
+    setViewOrder(order)
+    load()
+  }
+
+  function handleOrderDeleted() {
+    setViewOrder(null)
+    load()
+  }
+
   async function updateStatus(order: Order, status: string) {
     await api.put(`/orders/${order.id}`, { status })
     const prompt = createOrderReadyWhatsAppPrompt(order, status, shop)
     if (prompt) setWhatsAppPrompt(prompt)
+    if (viewOrder?.id === order.id) {
+      setViewOrder({ ...viewOrder, status: status as Order['status'] })
+    }
     load()
   }
 
@@ -136,15 +217,20 @@ export function OrdersPage() {
 
   async function updatePaymentStatus(order: Order, paymentStatus: 'paid' | 'pending') {
     await api.patch(`/orders/${order.id}/payment-status`, { payment_status: paymentStatus })
+    if (viewOrder?.id === order.id) {
+      setViewOrder({ ...viewOrder, payment_status: paymentStatus })
+    }
     load()
   }
 
   async function recordPayment(e: React.FormEvent) {
     e.preventDefault()
     if (!paymentModal) return
+    const data = paymentValidation.validate({ amount: paymentAmount })
+    if (!data) return
     setSaving(true)
     try {
-      await api.post(`/orders/${paymentModal.id}/payment`, { amount: paymentAmount })
+      await api.post(`/orders/${paymentModal.id}/payment`, { amount: data.amount })
       setPaymentModal(null)
       setPaymentAmount('')
       load()
@@ -158,6 +244,28 @@ export function OrdersPage() {
   const hasFilters = Boolean(
     searchQuery || statusFilter || paymentFilter || dateRange.from || dateRange.to,
   )
+
+  const columns = useMemo(
+    () =>
+      createOrderTableColumns({
+        currency,
+        shop,
+        whatsAppEnabled,
+        canWhatsApp: (order) =>
+          order.status === 'ready' &&
+          Boolean(order.client?.phone && sanitizePkPhoneNumber(order.client.phone)),
+        onOpenOrder: openOrderModal,
+        onEditOrder: editOrderModal,
+        onUpdateStatus: updateStatus,
+        onUpdatePaymentStatus: updatePaymentStatus,
+        onWhatsApp: openWhatsAppPrompt,
+        showDesigns,
+        showGarmentTypes,
+      }),
+    [currency, shop, whatsAppEnabled, viewOrder, showDesigns, showGarmentTypes],
+  )
+
+  const table = useTableColumns('orders', columns)
 
   return (
     <PageScroll>
@@ -207,156 +315,86 @@ export function OrdersPage() {
         />
       </ListingToolbar>
 
-      <Card className="overflow-hidden">
-        {loading && orders.length === 0 ? (
-          <LoadingSpinner />
-        ) : orders.length === 0 ? (
-          <EmptyState
-            icon={<ClipboardList size={48} />}
-            title={hasFilters ? 'No orders match your filters' : 'No orders yet'}
-            description={hasFilters ? 'Try adjusting search, status, or date range' : 'Create your first order to get started'}
-          />
-        ) : (
-          <>
-          <div className={`table-scroll-hint ${loading ? 'opacity-60' : ''}`}>
-            <table className="table-premium w-full min-w-[920px] text-sm">
-              <thead>
-                <tr className="border-b border-slate-100 text-left text-slate-500">
-                  <th className="px-5 py-3">Order #</th>
-                  <th className="px-5 py-3">Client</th>
-                  <th className="px-5 py-3">Design</th>
-                  <th className="px-5 py-3">Total</th>
-                  <th className="px-5 py-3">Balance</th>
-                  <th className="px-5 py-3">Due</th>
-                  <th className="px-5 py-3">Status</th>
-                  <th className="px-5 py-3">Payment</th>
-                  <th className="px-5 py-3">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-50">
-                {orders.map((order) => (
-                  <tr key={order.id} className="hover:bg-slate-50">
-                    <td className="px-5 py-3 font-medium">
-                      <button
-                        type="button"
-                        onClick={() => navigate(clientOrderUrl(order.client_id, order.id))}
-                        className="text-brand-600 hover:text-brand-800 hover:underline"
-                      >
-                        {order.order_number}
-                      </button>
-                    </td>
-                    <td className="px-5 py-3">
-                      {order.client_id ? (
-                        <Link
-                          to={clientOrderUrl(order.client_id)}
-                          className="font-medium text-slate-800 hover:text-brand-600"
-                        >
-                          {order.client?.name}
-                        </Link>
-                      ) : (
-                        order.client?.name || '—'
-                      )}
-                    </td>
-                    <td className="px-5 py-3">{order.design?.name || order.garment_type?.name || '—'}</td>
-                    <td className="px-5 py-3">{formatCurrency(order.total_amount, currency)}</td>
-                    <td className="px-5 py-3">{formatCurrency(order.balance ?? 0, currency)}</td>
-                    <td className="px-5 py-3">{formatDate(order.due_date)}</td>
-                    <td className="px-5 py-3">
-                      <Select
-                        size="sm"
-                        className="min-w-[120px]"
-                        value={order.status}
-                        onChange={(e) => updateStatus(order, e.target.value)}
-                        searchable={false}
-                        options={['pending', 'in_progress', 'ready', 'delivered', 'cancelled'].map((s) => ({
-                          value: s,
-                          label: s.replace('_', ' '),
-                        }))}
-                      />
-                    </td>
-                    <td className="px-5 py-3">
-                      <Select
-                        size="sm"
-                        className="min-w-[110px]"
-                        tone={order.payment_status === 'paid' ? 'success' : 'warning'}
-                        value={order.payment_status || 'pending'}
-                        onChange={(e) => updatePaymentStatus(order, e.target.value as 'paid' | 'pending')}
-                        searchable={false}
-                        options={[
-                          { value: 'pending', label: 'Pending' },
-                          { value: 'paid', label: 'Paid' },
-                        ]}
-                      />
-                    </td>
-                    <td className="px-5 py-3 text-right">
-                      <OrderRowActions
-                        order={order}
-                        whatsAppEnabled={whatsAppEnabled}
-                        canWhatsApp={
-                          order.status === 'ready' &&
-                          Boolean(order.client?.phone && sanitizePkPhoneNumber(order.client.phone))
-                        }
-                        onWhatsApp={() => openWhatsAppPrompt(order)}
-                        onPay={() => {
-                          setPaymentModal(order)
-                          setPaymentAmount(String(order.balance))
-                        }}
-                      />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <Pagination
-            meta={meta}
-            onPageChange={setPage}
-            onPerPageChange={(n) => { setPerPage(n); setPage(1) }}
-          />
-          </>
-        )}
-      </Card>
+      <ListingTableCard
+        loading={loading && orders.length > 0}
+        columnControls={
+          orders.length > 0 ? (
+            <ColumnVisibility
+              columns={table.columnMeta}
+              visibility={table.visibility}
+              onToggle={table.toggleColumn}
+              onReset={table.resetColumns}
+              visibleCount={table.visibleCount}
+              totalCount={table.totalCount}
+            />
+          ) : undefined
+        }
+        empty={
+          loading && orders.length === 0 ? (
+            <LoadingSpinner />
+          ) : orders.length === 0 ? (
+            <EmptyState
+              icon={<ClipboardList size={48} />}
+              title={hasFilters ? 'No orders match your filters' : 'No orders yet'}
+              description={hasFilters ? 'Try adjusting search, status, or date range' : 'Create your first order to get started'}
+            />
+          ) : undefined
+        }
+        pagination={
+          orders.length > 0 ? (
+            <Pagination
+              meta={meta}
+              onPageChange={setPage}
+              onPerPageChange={(n) => { setPerPage(n); setPage(1) }}
+            />
+          ) : undefined
+        }
+      >
+        <DataTable
+          columns={table.visibleColumns}
+          data={orders}
+          rowKey={(order) => order.id}
+          minWidth={Math.max(720, table.visibleCount * 110)}
+        />
+      </ListingTableCard>
 
       <Modal open={modalOpen} onClose={() => setModalOpen(false)} title="New Order" size="lg">
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form noValidate onSubmit={handleSubmit} className="space-y-4">
           <Select
             label="Client"
             searchable
             searchPlaceholder="Search clients..."
             placeholder="Select client..."
             value={form.client_id}
-            onChange={(e) => setForm((f) => ({ ...f, client_id: e.target.value }))}
+            onChange={(e) => { setForm((f) => ({ ...f, client_id: e.target.value })); orderValidation.clearField('client_id') }}
+            error={orderValidation.fieldErrors.client_id}
             required
-            options={[{ value: '', label: 'Select client...' }, ...clients.map((c) => ({ value: c.id, label: c.name }))]}
+            options={[{ value: '', label: 'Select client...' }, ...clients.map((c) => ({ value: c.id, label: `${c.name}${c.phone ? ` · ${c.phone}` : ''}` }))]}
           />
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Select
-              label="Design"
-              searchable
-              value={form.design_id}
-              onChange={(e) => setForm((f) => ({ ...f, design_id: e.target.value }))}
-              options={[{ value: '', label: 'None' }, ...designs.map((d) => ({ value: d.id, label: d.name }))]}
-            />
-            <Select
-              label="Garment Type"
-              searchable
-              value={form.garment_type_id}
-              onChange={(e) => setForm((f) => ({ ...f, garment_type_id: e.target.value }))}
-              options={[{ value: '', label: 'None' }, ...garmentTypes.map((t) => ({ value: t.id, label: t.name }))]}
-            />
-          </div>
+
+          <OrderSuitItemsEditor
+            items={suitItems}
+            onChange={setSuitItems}
+            designs={designs}
+            garmentTypes={garmentTypes}
+            showDesigns={showDesigns}
+            showGarmentTypes={showGarmentTypes}
+          />
+
+          <MultiImageUpload files={orderImages} onChange={setOrderImages} label="Order reference photos" />
+
           <div className="grid gap-4 sm:grid-cols-3">
-            <Input label="Total Amount" type="number" step="0.01" value={form.total_amount} onChange={(e) => setForm((f) => ({ ...f, total_amount: e.target.value }))} required />
-            <Input label="Advance Paid" type="number" step="0.01" value={form.paid_amount} onChange={(e) => setForm((f) => ({ ...f, paid_amount: e.target.value }))} />
-            <Input label="Order Date" type="date" value={form.order_date} onChange={(e) => setForm((f) => ({ ...f, order_date: e.target.value }))} required />
+            <Input label="Total Amount" type="number" step="0.01" placeholder="e.g. 12000" value={form.total_amount} onChange={(e) => { setForm((f) => ({ ...f, total_amount: e.target.value })); orderValidation.clearField('total_amount') }} error={orderValidation.fieldErrors.total_amount} required />
+            <Input label="Advance Paid" type="number" step="0.01" placeholder="e.g. 5000" value={form.paid_amount} onChange={(e) => { setForm((f) => ({ ...f, paid_amount: e.target.value })); orderValidation.clearField('paid_amount') }} error={orderValidation.fieldErrors.paid_amount} />
+            <Input label="Order Date" type="date" value={form.order_date} onChange={(e) => { setForm((f) => ({ ...f, order_date: e.target.value })); orderValidation.clearField('order_date') }} error={orderValidation.fieldErrors.order_date} required />
           </div>
           <Input label="Due Date" type="date" value={form.due_date} onChange={(e) => setForm((f) => ({ ...f, due_date: e.target.value }))} />
-          <Textarea label="Notes" value={form.notes} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))} rows={2} />
+          <Textarea label="Notes" placeholder="Special instructions for this order" value={form.notes} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))} rows={2} />
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={form.record_payment} onChange={(e) => setForm((f) => ({ ...f, record_payment: e.target.checked }))} />
             Record advance payment in accounts
           </label>
-          {error && <p className="text-sm text-red-600">{error}</p>}
+          {(error || orderValidation.formError) && <p className="text-sm text-red-600">{error || orderValidation.formError}</p>}
           <div className="flex justify-end gap-2">
             <Button type="button" variant="secondary" onClick={() => setModalOpen(false)}>Cancel</Button>
             <Button type="submit" disabled={saving}>{saving ? 'Creating...' : 'Create Order'}</Button>
@@ -365,16 +403,32 @@ export function OrdersPage() {
       </Modal>
 
       <Modal open={!!paymentModal} onClose={() => setPaymentModal(null)} title="Record Payment">
-        <form onSubmit={recordPayment} className="space-y-4">
+        <form noValidate onSubmit={recordPayment} className="space-y-4">
           <p className="text-sm text-slate-500">Order: {paymentModal?.order_number} — Balance: {formatCurrency(paymentModal?.balance ?? 0, currency)}</p>
-          <Input label="Amount" type="number" step="0.01" value={paymentAmount} onChange={(e) => setPaymentAmount(e.target.value)} required />
-          {error && <p className="text-sm text-red-600">{error}</p>}
+          <Input label="Amount" type="number" step="0.01" placeholder="Enter amount received" value={paymentAmount} onChange={(e) => { setPaymentAmount(e.target.value); paymentValidation.clearField('amount') }} error={paymentValidation.fieldErrors.amount} required />
+          {(error || paymentValidation.formError) && <p className="text-sm text-red-600">{error || paymentValidation.formError}</p>}
           <div className="flex justify-end gap-2">
             <Button type="button" variant="secondary" onClick={() => setPaymentModal(null)}>Cancel</Button>
             <Button type="submit" disabled={saving}>{saving ? 'Saving...' : 'Record Payment'}</Button>
           </div>
         </form>
       </Modal>
+
+      <OrderDetailModal
+        order={viewOrder}
+        currency={currency}
+        open={!!viewOrder}
+        onClose={closeOrderModal}
+        startInEditMode={openInEditMode}
+        onUpdated={handleOrderUpdated}
+        onDeleted={handleOrderDeleted}
+        onStatusChange={updateStatus}
+        onPaymentStatusChange={updatePaymentStatus}
+        onRecordPayment={(order) => {
+          setPaymentModal(order)
+          setPaymentAmount(String(order.balance ?? 0))
+        }}
+      />
 
       <WhatsAppOrderMessageModal
         prompt={whatsAppPrompt}

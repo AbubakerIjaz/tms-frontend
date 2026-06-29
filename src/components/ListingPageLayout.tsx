@@ -19,6 +19,7 @@ export function ListingPageLayout({ header, toolbar, children }: ListingPageLayo
 
 interface ScrollableTableCardProps {
   toolbar?: ReactNode
+  columnControls?: ReactNode
   pagination?: ReactNode
   loading?: boolean
   empty?: ReactNode
@@ -28,6 +29,7 @@ interface ScrollableTableCardProps {
 /** Card with fixed toolbar + pagination; only the table body scrolls */
 export function ScrollableTableCard({
   toolbar,
+  columnControls,
   pagination,
   loading,
   empty,
@@ -41,6 +43,11 @@ export function ScrollableTableCard({
     <div className="card-premium flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl">
       {toolbar && (
         <div className="shrink-0 border-b border-slate-100 bg-white/80 p-4">{toolbar}</div>
+      )}
+      {columnControls && (
+        <div className="flex shrink-0 items-center justify-end border-b border-slate-100 bg-white/80 px-4 py-2.5">
+          {columnControls}
+        </div>
       )}
       <div className={`table-scroll-area min-h-0 flex-1 overflow-auto ${loading ? 'opacity-60' : ''}`}>
         {children}

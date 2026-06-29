@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Plus, Shirt } from 'lucide-react'
+import { Navigate } from 'react-router-dom'
+import { Pencil, Plus, Shirt } from 'lucide-react'
 import { api, getErrorMessage } from '../lib/api'
 import { useAuth } from '../context/AuthContext'
 import { DEFAULT_PAGE_SIZE, defaultPaginationMeta, listingQueryParams, metaFromPaginated, useDateRangeFilter, useDebouncedSearch } from '../lib/listing'
@@ -14,6 +15,11 @@ import { ListingToolbar } from '../components/ui/ListingToolbar'
 import { Pagination } from '../components/ui/Pagination'
 import { PageScroll } from '../components/ListingPageLayout'
 import { EmptyState, formatCurrency, LoadingSpinner } from '../components/ui/Badge'
+import { ImageUploadField } from '../components/ui/ImageUploadField'
+import { useZodForm } from '../hooks/useZodForm'
+import { designFormSchema } from '../lib/validation'
+import { useShopFeatures } from '../hooks/useShopFeatures'
+import { useToast } from '../context/ToastContext'
 
 export function DesignsPage() {
   const { user } = useAuth()
@@ -28,27 +34,37 @@ export function DesignsPage() {
   const [perPage, setPerPage] = useState(DEFAULT_PAGE_SIZE)
   const [loading, setLoading] = useState(true)
   const [modalOpen, setModalOpen] = useState(false)
+  const [editing, setEditing] = useState<Design | null>(null)
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const [form, setForm] = useState({ name: '', description: '', base_price: '', garment_type_id: '' })
   const [image, setImage] = useState<File | null>(null)
+  const { fieldErrors, formError, validate, clearField, clearErrors } = useZodForm(designFormSchema)
+  const { isModuleEnabled } = useShopFeatures()
+  const showGarmentTypes = isModuleEnabled('garmentTypes')
+  const { toast, confirm } = useToast()
 
   const load = useCallback(() => {
     setLoading(true)
-    Promise.all([
+    const requests: Promise<unknown>[] = [
       api.get<Paginated<Design>>('/designs', {
         params: listingQueryParams(page, perPage, dateRange, {
-          garment_type_id: garmentFilter,
+          garment_type_id: showGarmentTypes ? garmentFilter : undefined,
           search: searchQuery,
         }),
       }),
-      api.get<GarmentType[]>('/garment-types'),
-    ]).then(([designsRes, typesRes]) => {
-      setDesigns(designsRes.data.data)
-      setMeta(metaFromPaginated(designsRes.data))
-      setGarmentTypes(typesRes.data)
+    ]
+    if (showGarmentTypes) {
+      requests.push(api.get<GarmentType[]>('/garment-types'))
+    }
+    Promise.all(requests).then((results) => {
+      setDesigns((results[0] as { data: Paginated<Design> }).data.data)
+      setMeta(metaFromPaginated((results[0] as { data: Paginated<Design> }).data))
+      if (showGarmentTypes) {
+        setGarmentTypes((results[1] as { data: GarmentType[] }).data)
+      }
     }).finally(() => setLoading(false))
-  }, [page, perPage, dateRange, garmentFilter, searchQuery])
+  }, [page, perPage, dateRange, garmentFilter, searchQuery, showGarmentTypes])
 
   useEffect(() => { load() }, [load])
 
@@ -56,22 +72,63 @@ export function DesignsPage() {
     setPage(1)
   }, [garmentFilter, searchQuery, dateRange.from, dateRange.to])
 
+  function openCreate() {
+    setEditing(null)
+    setForm({ name: '', description: '', base_price: '', garment_type_id: '' })
+    setImage(null)
+    setError('')
+    clearErrors()
+    setModalOpen(true)
+  }
+
+  function openEdit(design: Design) {
+    if (design.is_locked) {
+      setError('This design is linked to active orders and cannot be edited.')
+      return
+    }
+
+    setEditing(design)
+    setForm({
+      name: design.name,
+      description: design.description || '',
+      base_price: design.base_price || '',
+      garment_type_id: design.garment_type_id ? String(design.garment_type_id) : '',
+    })
+    setImage(null)
+    setError('')
+    clearErrors()
+    setModalOpen(true)
+  }
+
+  function closeModal() {
+    setModalOpen(false)
+    setEditing(null)
+    setImage(null)
+    setError('')
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    const data = validate(form)
+    if (!data) return
     setSaving(true)
     setError('')
     const fd = new FormData()
-    fd.append('name', form.name)
-    fd.append('description', form.description)
-    fd.append('base_price', form.base_price || '0')
-    if (form.garment_type_id) fd.append('garment_type_id', form.garment_type_id)
+    fd.append('name', data.name)
+    fd.append('description', data.description ?? '')
+    fd.append('base_price', data.base_price || '0')
+    if (data.garment_type_id) fd.append('garment_type_id', data.garment_type_id)
     if (image) fd.append('image', image)
     try {
-      await api.post('/designs', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
-      setModalOpen(false)
+      if (editing) {
+        fd.append('_method', 'PUT')
+        await api.post(`/designs/${editing.id}`, fd)
+      } else {
+        await api.post('/designs', fd)
+      }
+      closeModal()
       setForm({ name: '', description: '', base_price: '', garment_type_id: '' })
-      setImage(null)
-      setPage(1)
+      if (!editing) setPage(1)
       load()
     } catch (err) {
       setError(getErrorMessage(err))
@@ -81,9 +138,29 @@ export function DesignsPage() {
   }
 
   async function handleDelete(id: number) {
-    if (!confirm('Delete this design?')) return
-    await api.delete(`/designs/${id}`)
-    load()
+    const design = designs.find((d) => d.id === id)
+    if (design?.is_locked) {
+      toast.error('This design is linked to orders and cannot be deleted.')
+      return
+    }
+    const ok = await confirm({
+      title: 'Delete design?',
+      message: 'This design will be permanently removed.',
+      confirmLabel: 'Delete',
+      variant: 'danger',
+    })
+    if (!ok) return
+    try {
+      await api.delete(`/designs/${id}`)
+      toast.success('Design deleted')
+      load()
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    }
+  }
+
+  if (!isModuleEnabled('designs')) {
+    return <Navigate to="/" replace />
   }
 
   return (
@@ -96,7 +173,7 @@ export function DesignsPage() {
             {meta.total > 0 ? `${meta.total} designs` : 'Manage suits, dresses, and clothing designs'}
           </p>
         </div>
-        <Button className="w-full sm:w-auto" onClick={() => setModalOpen(true)}><Plus size={18} /> Add Design</Button>
+        <Button className="w-full sm:w-auto" onClick={openCreate}><Plus size={18} /> Add Design</Button>
       </div>
 
       <ListingToolbar
@@ -109,6 +186,7 @@ export function DesignsPage() {
           placeholder: 'Search design name or description...',
         }}
       >
+        {showGarmentTypes && (
         <Select
           className="w-52"
           value={garmentFilter}
@@ -118,6 +196,7 @@ export function DesignsPage() {
             ...garmentTypes.map((t) => ({ value: t.id, label: t.name })),
           ]}
         />
+        )}
       </ListingToolbar>
 
       {loading && designs.length === 0 ? (
@@ -137,10 +216,29 @@ export function DesignsPage() {
                   )}
                 </div>
                 <div className="p-4">
-                  <h3 className="font-semibold">{design.name}</h3>
-                  <p className="text-sm text-slate-500">{design.garment_type?.name}</p>
+                  <div className="flex items-start justify-between gap-2">
+                    <h3 className="font-semibold">{design.name}</h3>
+                    {design.is_locked ? (
+                      <span className="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase text-amber-800">
+                        In orders
+                      </span>
+                    ) : null}
+                  </div>
+                  {showGarmentTypes && design.garment_type?.name && (
+                    <p className="text-sm text-slate-500">{design.garment_type.name}</p>
+                  )}
                   <p className="mt-1 font-medium text-brand-600">{formatCurrency(design.base_price, currency)}</p>
-                  <Button size="sm" variant="danger" className="mt-2" onClick={() => handleDelete(design.id)}>Delete</Button>
+                  {design.is_locked ? (
+                    <p className="mt-2 text-xs text-slate-500">Linked to {design.orders_count} order(s) — cannot edit or delete</p>
+                  ) : (
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <Button size="sm" variant="secondary" onClick={() => openEdit(design)}>
+                        <Pencil size={14} />
+                        Edit
+                      </Button>
+                      <Button size="sm" variant="danger" onClick={() => handleDelete(design.id)}>Delete</Button>
+                    </div>
+                  )}
                 </div>
               </div>
             ))}
@@ -153,21 +251,21 @@ export function DesignsPage() {
         </Card>
       )}
 
-      <Modal open={modalOpen} onClose={() => setModalOpen(false)} title="Add Design">
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <Input label="Name" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} required />
+      <Modal open={modalOpen} onClose={closeModal} title={editing ? 'Edit Design' : 'Add Design'}>
+        <form noValidate onSubmit={handleSubmit} className="space-y-4">
+          <Input label="Name" placeholder="e.g. Embroidered Shalwar Kameez" value={form.name} onChange={(e) => { setForm((f) => ({ ...f, name: e.target.value })); clearField('name') }} error={fieldErrors.name} required />
+          {showGarmentTypes && (
           <Select label="Garment Type" value={form.garment_type_id} onChange={(e) => setForm((f) => ({ ...f, garment_type_id: e.target.value }))}
+            placeholder="Select garment type..."
             options={[{ value: '', label: 'Select...' }, ...garmentTypes.map((t) => ({ value: t.id, label: t.name }))]} />
-          <Input label="Base Price" type="number" step="0.01" value={form.base_price} onChange={(e) => setForm((f) => ({ ...f, base_price: e.target.value }))} />
-          <Textarea label="Description" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} rows={3} />
-          <div>
-            <label className="mb-1 block text-sm font-medium text-slate-700">Image</label>
-            <input type="file" accept="image/*" onChange={(e) => setImage(e.target.files?.[0] || null)} className="text-sm" />
-          </div>
-          {error && <p className="text-sm text-red-600">{error}</p>}
+          )}
+          <Input label="Base Price" type="number" step="0.01" placeholder="e.g. 3500" value={form.base_price} onChange={(e) => { setForm((f) => ({ ...f, base_price: e.target.value })); clearField('base_price') }} error={fieldErrors.base_price} />
+          <Textarea label="Description" placeholder="Design details (optional)" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} rows={3} />
+          <ImageUploadField file={image} onChange={setImage} existingUrl={editing?.image_url} />
+          {(error || formError) && <p className="text-sm text-red-600">{error || formError}</p>}
           <div className="flex justify-end gap-2">
-            <Button type="button" variant="secondary" onClick={() => setModalOpen(false)}>Cancel</Button>
-            <Button type="submit" disabled={saving}>{saving ? 'Saving...' : 'Save Design'}</Button>
+            <Button type="button" variant="secondary" onClick={closeModal}>Cancel</Button>
+            <Button type="submit" disabled={saving}>{saving ? 'Saving...' : editing ? 'Save Changes' : 'Save Design'}</Button>
           </div>
         </form>
       </Modal>

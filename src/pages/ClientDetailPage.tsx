@@ -1,12 +1,15 @@
-import { useEffect, useState } from 'react'
-import { Link, useParams, useSearchParams } from 'react-router-dom'
+import { useEffect, useMemo, useState } from 'react'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, Pencil, Plus, Ruler, Trash2 } from 'lucide-react'
 import { api, getErrorMessage } from '../lib/api'
 import { resolveClientOrder } from '../lib/navigation'
 import { createOrderReadyWhatsAppPrompt } from '../lib/orderWhatsAppNotifications'
 import { isWhatsAppEnabled } from '../lib/whatsappSettings'
 import { sanitizePkPhoneNumber } from '../lib/whatsapp'
+import { useSetPageBreadcrumbs } from '../context/BreadcrumbContext'
 import { useAuth } from '../context/AuthContext'
+import { useShopFeatures } from '../hooks/useShopFeatures'
+import { useToast } from '../context/ToastContext'
 import type { Client, Order } from '../types'
 import type { StitchingPresets, StitchingSize } from '../types/stitching'
 import {
@@ -22,12 +25,24 @@ import { Textarea } from '../components/ui/Textarea'
 import { Card, CardBody, CardHeader } from '../components/ui/Card'
 import { Modal } from '../components/ui/Modal'
 import { formatCurrency, formatDate, LoadingSpinner } from '../components/ui/Badge'
-import { OrderRowActions } from '../components/OrderRowActions'
 import {
   WhatsAppOrderMessageModal,
   type WhatsAppOrderPrompt,
 } from '../components/WhatsAppOrderMessageModal'
 import { OrderDetailModal } from '../components/OrderDetailModal'
+import { ColumnVisibility } from '../components/ui/ColumnVisibility'
+import { DataTable, ListingTableCard } from '../components/ui/DataTable'
+import { useTableColumns } from '../hooks/useTableColumns'
+import { createOrderTableColumns } from '../components/tables/ordersTable'
+import { VoiceMeasurementPanel } from '../components/VoiceMeasurementPanel'
+import { useZodForm } from '../hooks/useZodForm'
+import {
+  clientFormSchema,
+  GENDER_OPTIONS_WITH_PLACEHOLDER,
+  paymentAmountSchema,
+  stitchingFormSchema,
+  type ClientFormValues,
+} from '../lib/validation'
 
 const emptyForm = () => ({
   label: '',
@@ -37,10 +52,22 @@ const emptyForm = () => ({
   sections: [{ name: 'Kameez', rows: [{ key: '', value: '' }] }] as MeasurementSection[],
 })
 
+const emptyClientForm = () => ({
+  name: '',
+  phone: '',
+  email: '',
+  address: '',
+  gender: '',
+  notes: '',
+})
+
 export function ClientDetailPage() {
   const { id } = useParams()
+  const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const { user } = useAuth()
+  const { isModuleEnabled } = useShopFeatures()
+  const { toast, confirm } = useToast()
   const unit = user?.shop?.measurement_unit || 'inch'
   const currency = user?.shop?.currency || 'PKR'
   const shop = user?.shop
@@ -57,6 +84,15 @@ export function ClientDetailPage() {
   const [paymentAmount, setPaymentAmount] = useState('')
   const [whatsAppPrompt, setWhatsAppPrompt] = useState<WhatsAppOrderPrompt | null>(null)
   const [viewOrder, setViewOrder] = useState<Order | null>(null)
+  const [openInEditMode, setOpenInEditMode] = useState(false)
+  const [clientModalOpen, setClientModalOpen] = useState(false)
+  const [clientForm, setClientForm] = useState(emptyClientForm())
+  const [clientSaving, setClientSaving] = useState(false)
+  const [clientDeleting, setClientDeleting] = useState(false)
+  const [clientError, setClientError] = useState('')
+  const clientValidation = useZodForm(clientFormSchema)
+  const stitchingValidation = useZodForm(stitchingFormSchema)
+  const paymentValidation = useZodForm(paymentAmountSchema)
 
   async function load() {
     setLoading(true)
@@ -131,6 +167,14 @@ export function ClientDetailPage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    const validated = stitchingValidation.validate({
+      label: form.label,
+      standard_size: form.standard_size,
+      measured_at: form.measured_at,
+      notes: form.notes,
+    })
+    if (!validated) return
+
     setSaving(true)
     setError('')
 
@@ -145,7 +189,7 @@ export function ClientDetailPage() {
       client_id: id,
       label: form.label || null,
       standard_size: form.standard_size || null,
-      measured_at: form.measured_at,
+      measured_at: validated.measured_at,
       notes: form.notes || null,
       sections,
     }
@@ -165,19 +209,116 @@ export function ClientDetailPage() {
     }
   }
 
-  async function handleDelete(recordId: number) {
-    if (!confirm('Delete this measurement record?')) return
-    await api.delete(`/stitching-sizes/${recordId}`)
+  function openClientEdit() {
+    if (!client) return
+    setClientForm({
+      name: client.name,
+      phone: client.phone || '',
+      email: client.email || '',
+      address: client.address || '',
+      gender: client.gender || '',
+      notes: client.notes || '',
+    })
+    clientValidation.clearErrors()
+    setClientError('')
+    setClientModalOpen(true)
+  }
+
+  function updateClientField<K extends keyof ClientFormValues>(field: K, value: ClientFormValues[K]) {
+    setClientForm((f) => ({ ...f, [field]: value }))
+    clientValidation.clearField(field)
+  }
+
+  async function handleClientSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!client) return
+    const data = clientValidation.validate(clientForm)
+    if (!data) return
+    setClientSaving(true)
+    setClientError('')
+    try {
+      const res = await api.put<Client>(`/clients/${client.id}`, data)
+      setClient(res.data)
+      setClientModalOpen(false)
+    } catch (err) {
+      setClientError(getErrorMessage(err))
+    } finally {
+      setClientSaving(false)
+    }
+  }
+
+  async function handleClientDelete() {
+    if (!client) return
+    const ok = await confirm({
+      title: `Delete ${client.name}?`,
+      message: 'All measurements and orders for this client will also be removed.',
+      confirmLabel: 'Delete client',
+      variant: 'danger',
+    })
+    if (!ok) return
+    setClientDeleting(true)
+    try {
+      await api.delete(`/clients/${client.id}`)
+      toast.success('Client deleted')
+      navigate('/clients')
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setClientDeleting(false)
+    }
+  }
+
+  function handleOrderUpdated(order: Order) {
+    setViewOrder({ ...order, client: order.client ?? client ?? undefined })
     load()
   }
 
+  function handleOrderDeleted() {
+    setViewOrder(null)
+    if (searchParams.get('order')) {
+      const next = new URLSearchParams(searchParams)
+      next.delete('order')
+      setSearchParams(next, { replace: true })
+    }
+    load()
+  }
+
+  async function handleDelete(recordId: number) {
+    const ok = await confirm({
+      title: 'Delete measurement?',
+      message: 'This measurement record will be permanently removed.',
+      confirmLabel: 'Delete',
+      variant: 'danger',
+    })
+    if (!ok) return
+    try {
+      await api.delete(`/stitching-sizes/${recordId}`)
+      toast.success('Measurement deleted')
+      load()
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    }
+  }
+
   function openOrderModal(order: Order) {
-    setViewOrder({ ...order, client: order.client ?? client ?? undefined })
+    setOpenInEditMode(false)
     setSearchParams({ order: String(order.id) }, { replace: true })
+    api.get<Order>(`/orders/${order.id}`).then((res) => {
+      setViewOrder({ ...res.data, client: res.data.client ?? client ?? undefined })
+    })
+  }
+
+  function editOrderModal(order: Order) {
+    setOpenInEditMode(true)
+    setSearchParams({ order: String(order.id) }, { replace: true })
+    api.get<Order>(`/orders/${order.id}`).then((res) => {
+      setViewOrder({ ...res.data, client: res.data.client ?? client ?? undefined })
+    })
   }
 
   function closeOrderModal() {
     setViewOrder(null)
+    setOpenInEditMode(false)
     if (searchParams.get('order')) {
       const next = new URLSearchParams(searchParams)
       next.delete('order')
@@ -216,10 +357,12 @@ export function ClientDetailPage() {
   async function recordPayment(e: React.FormEvent) {
     e.preventDefault()
     if (!paymentModal) return
+    const data = paymentValidation.validate({ amount: paymentAmount })
+    if (!data) return
     setSaving(true)
     setError('')
     try {
-      await api.post(`/orders/${paymentModal.id}/payment`, { amount: paymentAmount })
+      await api.post(`/orders/${paymentModal.id}/payment`, { amount: data.amount })
       setPaymentModal(null)
       setPaymentAmount('')
       load()
@@ -235,6 +378,40 @@ export function ClientDetailPage() {
     setPaymentAmount(String(order.balance ?? 0))
     setError('')
   }
+
+  const orderColumns = useMemo(
+    () =>
+      createOrderTableColumns({
+        currency,
+        shop,
+        whatsAppEnabled,
+        canWhatsApp: (order) =>
+          order.status === 'ready' && Boolean(client?.phone && sanitizePkPhoneNumber(client.phone)),
+        onOpenOrder: openOrderModal,
+        onEditOrder: editOrderModal,
+        onUpdateStatus: updateOrderStatus,
+        onUpdatePaymentStatus: updatePaymentStatus,
+        onWhatsApp: openWhatsAppPrompt,
+        showClient: false,
+        showPaid: true,
+        showDesigns: isModuleEnabled('designs'),
+        showGarmentTypes: isModuleEnabled('garmentTypes'),
+      }),
+    [currency, shop, whatsAppEnabled, client, isModuleEnabled],
+  )
+
+  const orderTable = useTableColumns(`client-orders-${id}`, orderColumns)
+
+  const pageBreadcrumbs = useMemo(() => {
+    if (!client) return null
+    return [
+      { label: 'Dashboard', labelUr: 'ڈیش بورڈ', to: '/' },
+      { label: 'Clients', labelUr: 'گاہک', to: '/clients' },
+      { label: client.name },
+    ]
+  }, [client])
+
+  useSetPageBreadcrumbs(pageBreadcrumbs)
 
   if (loading) return <LoadingSpinner />
   if (!client) return <p>Client not found</p>
@@ -253,9 +430,30 @@ export function ClientDetailPage() {
         </div>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-3">
-        <Card className="lg:col-span-1">
-          <CardHeader title="Client Info" />
+      {isModuleEnabled('voiceMeasurements') && client && (
+        <VoiceMeasurementPanel
+          defaultClientId={client.id}
+          defaultClientName={client.name}
+          compact
+          onSaved={load}
+        />
+      )}
+
+      <div className={`grid gap-6 ${isModuleEnabled('measurements') ? 'lg:grid-cols-3' : ''}`}>
+        <Card className={isModuleEnabled('measurements') ? 'lg:col-span-1' : ''}>
+          <CardHeader
+            title="Client Info"
+            action={
+              <div className="flex gap-1">
+                <button type="button" onClick={openClientEdit} className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-brand-600" aria-label="Edit client">
+                  <Pencil size={16} />
+                </button>
+                <button type="button" onClick={handleClientDelete} disabled={clientDeleting} className="rounded-lg p-2 text-slate-400 hover:bg-red-50 hover:text-red-600" aria-label="Delete client">
+                  <Trash2 size={16} />
+                </button>
+              </div>
+            }
+          />
           <CardBody className="space-y-2 text-sm">
             <p><span className="text-slate-500">Gender:</span> {client.gender || '—'}</p>
             <p><span className="text-slate-500">Address:</span> {client.address || '—'}</p>
@@ -263,6 +461,7 @@ export function ClientDetailPage() {
           </CardBody>
         </Card>
 
+        {isModuleEnabled('measurements') && (
         <Card className="lg:col-span-2">
           <CardHeader
             title="Stitching Measurements"
@@ -326,101 +525,41 @@ export function ClientDetailPage() {
             )}
           </CardBody>
         </Card>
+        )}
       </div>
 
-      {client.orders && client.orders.length > 0 && (
-        <Card>
-          <CardHeader title="Orders & Payments" />
-          <CardBody className="!p-0">
-            <div className="table-scroll-hint">
-              <table className="table-premium w-full min-w-[900px] text-sm">
-                <thead>
-                  <tr className="border-b border-slate-100 bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
-                    <th className="px-5 py-3">Order #</th>
-                    <th className="px-5 py-3">Design</th>
-                    <th className="px-5 py-3">Status</th>
-                    <th className="px-5 py-3">Total</th>
-                    <th className="px-5 py-3">Paid</th>
-                    <th className="px-5 py-3">Balance</th>
-                    <th className="px-5 py-3">Payment</th>
-                    <th className="px-5 py-3">Date</th>
-                    <th className="px-5 py-3">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-50">
-                  {client.orders.map((order) => (
-                    <tr key={order.id} className="hover:bg-slate-50/80">
-                      <td className="px-5 py-3 font-medium">
-                        <button
-                          type="button"
-                          onClick={() => openOrderModal(order)}
-                          className="text-brand-600 hover:text-brand-800 hover:underline"
-                        >
-                          {order.order_number}
-                        </button>
-                      </td>
-                      <td className="px-5 py-3">{order.design?.name || order.garment_type?.name || '—'}</td>
-                      <td className="px-5 py-3">
-                        <Select
-                          size="sm"
-                          className="min-w-[120px]"
-                          value={order.status}
-                          onChange={(e) => updateOrderStatus(order, e.target.value)}
-                          searchable={false}
-                          options={['pending', 'in_progress', 'ready', 'delivered', 'cancelled'].map((s) => ({
-                            value: s,
-                            label: s.replace('_', ' '),
-                          }))}
-                        />
-                      </td>
-                      <td className="px-5 py-3 whitespace-nowrap">{formatCurrency(order.total_amount, currency)}</td>
-                      <td className="px-5 py-3 whitespace-nowrap">{formatCurrency(order.paid_amount, currency)}</td>
-                      <td className="px-5 py-3 whitespace-nowrap font-medium text-amber-700">
-                        {formatCurrency(order.balance ?? 0, currency)}
-                      </td>
-                      <td className="px-5 py-3">
-                        <Select
-                          size="sm"
-                          className="min-w-[110px]"
-                          tone={order.payment_status === 'paid' ? 'success' : 'warning'}
-                          value={order.payment_status || 'pending'}
-                          onChange={(e) => updatePaymentStatus(order, e.target.value as 'paid' | 'pending')}
-                          searchable={false}
-                          options={[
-                            { value: 'pending', label: 'Pending' },
-                            { value: 'paid', label: 'Paid' },
-                          ]}
-                        />
-                      </td>
-                      <td className="px-5 py-3 whitespace-nowrap">{formatDate(order.order_date)}</td>
-                      <td className="px-5 py-3 text-right">
-                        <OrderRowActions
-                          order={order}
-                          whatsAppEnabled={whatsAppEnabled}
-                          canWhatsApp={
-                            order.status === 'ready' &&
-                            Boolean(client.phone && sanitizePkPhoneNumber(client.phone))
-                          }
-                          onWhatsApp={() => openWhatsAppPrompt(order)}
-                          onPay={() => openPaymentModal(order)}
-                        />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </CardBody>
-        </Card>
+      {isModuleEnabled('orders') && client.orders && client.orders.length > 0 && (
+        <div className="space-y-3">
+          <h3 className="text-lg font-semibold text-slate-900">Orders & Payments</h3>
+          <ListingTableCard
+          columnControls={
+            <ColumnVisibility
+              columns={orderTable.columnMeta}
+              visibility={orderTable.visibility}
+              onToggle={orderTable.toggleColumn}
+              onReset={orderTable.resetColumns}
+              visibleCount={orderTable.visibleCount}
+              totalCount={orderTable.totalCount}
+            />
+          }
+        >
+          <DataTable
+            columns={orderTable.visibleColumns}
+            data={client.orders}
+            rowKey={(order) => order.id}
+            minWidth={Math.max(720, orderTable.visibleCount * 110)}
+          />
+        </ListingTableCard>
+        </div>
       )}
 
       <Modal open={!!paymentModal} onClose={() => setPaymentModal(null)} title="Record Payment">
-        <form onSubmit={recordPayment} className="space-y-4">
+        <form noValidate onSubmit={recordPayment} className="space-y-4">
           <p className="text-sm text-slate-500">
             Order: {paymentModal?.order_number} — Balance: {formatCurrency(paymentModal?.balance ?? 0, currency)}
           </p>
-          <Input label="Amount" type="number" step="0.01" value={paymentAmount} onChange={(e) => setPaymentAmount(e.target.value)} required />
-          {error && <p className="text-sm text-red-600">{error}</p>}
+          <Input label="Amount" type="number" step="0.01" placeholder="Enter amount received" value={paymentAmount} onChange={(e) => { setPaymentAmount(e.target.value); paymentValidation.clearField('amount') }} error={paymentValidation.fieldErrors.amount} required />
+          {(error || paymentValidation.formError) && <p className="text-sm text-red-600">{error || paymentValidation.formError}</p>}
           <div className="flex justify-end gap-2">
             <Button type="button" variant="secondary" onClick={() => setPaymentModal(null)}>Cancel</Button>
             <Button type="submit" disabled={saving}>{saving ? 'Saving...' : 'Record Payment'}</Button>
@@ -428,11 +567,12 @@ export function ClientDetailPage() {
         </form>
       </Modal>
 
+      {isModuleEnabled('measurements') && (
       <Modal open={modalOpen} onClose={() => setModalOpen(false)} title={editing ? 'Edit Measurement' : 'Add Measurement'} size="xl">
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form noValidate onSubmit={handleSubmit} className="space-y-4">
           <div className="grid gap-4 sm:grid-cols-2">
-            <Input label="Label (optional)" value={form.label} onChange={(e) => setForm((f) => ({ ...f, label: e.target.value }))} />
-            <Input label="Measured Date" type="date" value={form.measured_at} onChange={(e) => setForm((f) => ({ ...f, measured_at: e.target.value }))} required />
+            <Input label="Label (optional)" placeholder="e.g. Wedding suit" value={form.label} onChange={(e) => setForm((f) => ({ ...f, label: e.target.value }))} />
+            <Input label="Measured Date" type="date" value={form.measured_at} onChange={(e) => { setForm((f) => ({ ...f, measured_at: e.target.value })); stitchingValidation.clearField('measured_at') }} error={stitchingValidation.fieldErrors.measured_at} required />
           </div>
           <div>
             <label className="mb-1 block text-sm font-medium text-slate-700">Quick preset (optional)</label>
@@ -453,23 +593,53 @@ export function ClientDetailPage() {
           </div>
           <SectionsEditor sections={form.sections} onChange={(sections) => setForm((f) => ({ ...f, sections }))} unit={unit} />
           <Textarea label="Notes" value={form.notes} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))} rows={2} />
-          {error && <p className="text-sm text-red-600">{error}</p>}
+          {(error || stitchingValidation.formError) && <p className="text-sm text-red-600">{error || stitchingValidation.formError}</p>}
           <div className="flex justify-end gap-2">
             <Button type="button" variant="secondary" onClick={() => setModalOpen(false)}>Cancel</Button>
             <Button type="submit" disabled={saving}>{saving ? 'Saving...' : editing ? 'Update' : 'Save Measurement'}</Button>
           </div>
         </form>
       </Modal>
+      )}
 
       <OrderDetailModal
         order={viewOrder}
         currency={currency}
         open={!!viewOrder}
         onClose={closeOrderModal}
+        startInEditMode={openInEditMode}
+        onUpdated={handleOrderUpdated}
+        onDeleted={handleOrderDeleted}
         onStatusChange={updateOrderStatus}
         onPaymentStatusChange={updatePaymentStatus}
         onRecordPayment={openPaymentModal}
       />
+
+      <Modal open={clientModalOpen} onClose={() => setClientModalOpen(false)} title="Edit Client">
+        <form noValidate onSubmit={handleClientSubmit} className="space-y-4">
+          <Input label="Name" placeholder="e.g. Ahmad Khan" value={clientForm.name} onChange={(e) => updateClientField('name', e.target.value)} error={clientValidation.fieldErrors.name} required />
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Input label="Phone" placeholder="e.g. 0300 1234567" value={clientForm.phone} onChange={(e) => updateClientField('phone', e.target.value)} error={clientValidation.fieldErrors.phone} required />
+            <Input label="Email" type="email" placeholder="e.g. name@example.com" value={clientForm.email} onChange={(e) => updateClientField('email', e.target.value)} error={clientValidation.fieldErrors.email} />
+          </div>
+          <Select
+            label="Gender"
+            value={clientForm.gender}
+            onChange={(e) => updateClientField('gender', e.target.value as ClientFormValues['gender'])}
+            error={clientValidation.fieldErrors.gender}
+            required
+            placeholder="Select gender..."
+            options={[...GENDER_OPTIONS_WITH_PLACEHOLDER]}
+          />
+          <Input label="Address" placeholder="Street, area, city" value={clientForm.address} onChange={(e) => updateClientField('address', e.target.value)} />
+          <Textarea label="Notes" placeholder="Any extra details about this client" value={clientForm.notes} onChange={(e) => updateClientField('notes', e.target.value)} rows={3} />
+          {(clientError || clientValidation.formError) && <p className="text-sm text-red-600">{clientError || clientValidation.formError}</p>}
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="secondary" onClick={() => setClientModalOpen(false)}>Cancel</Button>
+            <Button type="submit" disabled={clientSaving}>{clientSaving ? 'Saving…' : 'Save changes'}</Button>
+          </div>
+        </form>
+      </Modal>
 
       <WhatsAppOrderMessageModal
         prompt={whatsAppPrompt}

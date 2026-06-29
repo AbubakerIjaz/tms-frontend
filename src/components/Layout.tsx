@@ -1,4 +1,4 @@
-import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard,
   Users,
@@ -13,27 +13,57 @@ import {
   Menu,
   X,
   Sparkles,
+  Mic,
+  Ruler,
 } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAuth } from '../context/AuthContext'
+import { BreadcrumbProvider } from '../context/BreadcrumbContext'
+import { useShopFeatures, shopTypeLabel, shopTypeLabelUr } from '../hooks/useShopFeatures'
+import type { ShopModuleSettings } from '../lib/shopSettings'
+import { AppBreadcrumb } from './AppBreadcrumb'
 import { Button } from './ui/Button'
 
-const navItems = [
-  { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
-  { to: '/clients', icon: Users, label: 'Clients' },
-  { to: '/orders', icon: ClipboardList, label: 'Orders' },
-  { to: '/designs', icon: Shirt, label: 'Designs' },
-  { to: '/garment-types', icon: Scissors, label: 'Garment Types' },
-  { to: '/gallery', icon: Image, label: 'Gallery' },
-  { to: '/categories', icon: FolderOpen, label: 'Categories' },
-  { to: '/accounts', icon: Wallet, label: 'Accounts' },
-  { to: '/settings', icon: Settings, label: 'Settings' },
+const allNavItems: {
+  to: string
+  icon: typeof LayoutDashboard
+  label: string
+  labelUr: string
+  module?: keyof ShopModuleSettings
+}[] = [
+  { to: '/', icon: LayoutDashboard, label: 'Dashboard', labelUr: 'ڈیش بورڈ' },
+  { to: '/clients', icon: Users, label: 'Clients', labelUr: 'گاہک', module: 'clients' },
+  { to: '/orders', icon: ClipboardList, label: 'Orders', labelUr: 'آرڈرز', module: 'orders' },
+  { to: '/designs', icon: Shirt, label: 'Designs', labelUr: 'ڈیزائن', module: 'designs' },
+  { to: '/measurements', icon: Ruler, label: 'Measurements', labelUr: 'ناپ', module: 'measurements' },
+  { to: '/garment-types', icon: Scissors, label: 'Garment Types', labelUr: 'کپڑے', module: 'garmentTypes' },
+  { to: '/gallery', icon: Image, label: 'Gallery', labelUr: 'گیلری', module: 'gallery' },
+  { to: '/categories', icon: FolderOpen, label: 'Categories', labelUr: 'زمرے', module: 'categories' },
+  { to: '/accounts', icon: Wallet, label: 'Accounts', labelUr: 'اکاؤنٹس', module: 'accounts' },
+  { to: '/voice-measurements', icon: Mic, label: 'Voice Measurements', labelUr: 'آواز سے ناپ', module: 'voiceMeasurements' },
+  { to: '/settings', icon: Settings, label: 'Settings', labelUr: 'ترتیبات' },
 ]
 
 export function Layout() {
   const { user, logout } = useAuth()
+  const { shopType, isModuleEnabled, showUrduLabels } = useShopFeatures()
   const navigate = useNavigate()
+  const location = useLocation()
+  const mainRef = useRef<HTMLElement>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
+
+  useEffect(() => {
+    mainRef.current?.scrollTo({ top: 0, left: 0 })
+  }, [location.pathname, location.search])
+
+  useEffect(() => {
+    setSidebarOpen(false)
+  }, [location.pathname])
+
+  const navItems = useMemo(
+    () => allNavItems.filter((item) => !item.module || isModuleEnabled(item.module)),
+    [isModuleEnabled],
+  )
 
   async function handleLogout() {
     await logout()
@@ -53,6 +83,7 @@ export function Layout() {
   }, [sidebarOpen])
 
   return (
+    <BreadcrumbProvider>
     <div className="flex h-screen overflow-hidden">
       {sidebarOpen && (
         <div className="fixed inset-0 z-40 bg-surface-950/60 backdrop-blur-sm lg:hidden" onClick={() => setSidebarOpen(false)} />
@@ -71,7 +102,12 @@ export function Layout() {
           )}
           <div className="min-w-0 flex-1">
             <p className="truncate font-semibold text-white">{shopName}</p>
-            <p className="truncate text-xs capitalize text-indigo-300/80">{user?.shop?.type} shop</p>
+            <p className="truncate text-xs text-indigo-300/80">
+              {shopTypeLabel(shopType)}
+              {showUrduLabels && (
+                <span className="opacity-70" dir="rtl"> — {shopTypeLabelUr(shopType)}</span>
+              )}
+            </p>
           </div>
           <button className="rounded-lg p-1 text-indigo-300 hover:bg-white/10 lg:hidden" onClick={() => setSidebarOpen(false)}>
             <X size={20} />
@@ -79,14 +115,14 @@ export function Layout() {
         </div>
 
         <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto p-3">
-          {navItems.map(({ to, icon: Icon, label }) => (
+          {navItems.map(({ to, icon: Icon, label, labelUr }) => (
             <NavLink
               key={to}
               to={to}
               end={to === '/'}
               onClick={() => setSidebarOpen(false)}
               className={({ isActive }) =>
-                `flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-200 ${
+                `flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium transition-all duration-200 touch-target ${
                   isActive ? 'sidebar-nav-active' : 'sidebar-nav-link'
                 }`
               }
@@ -94,9 +130,14 @@ export function Layout() {
               {({ isActive }) => (
                 <>
                   <span className={`sidebar-nav-icon shrink-0 ${isActive ? '' : 'opacity-80'}`}>
-                    <Icon size={18} />
+                    <Icon size={20} />
                   </span>
-                  <span className="truncate">{label}</span>
+                  <span className="min-w-0 flex-1 truncate">
+                    <span className="block">{label}</span>
+                    {showUrduLabels && (
+                      <span className="block text-[10px] font-normal opacity-60" dir="rtl">{labelUr}</span>
+                    )}
+                  </span>
                 </>
               )}
             </NavLink>
@@ -111,7 +152,7 @@ export function Layout() {
           <Button
             variant="ghost"
             size="sm"
-            className="w-full !text-indigo-200 hover:!bg-white/10 hover:!text-white"
+            className="w-full !text-indigo-200 hover:!bg-white/10 hover:!text-white touch-target"
             onClick={handleLogout}
           >
             <LogOut size={16} /> Sign out
@@ -124,18 +165,20 @@ export function Layout() {
           <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-4">
             <button
               type="button"
-              className="shrink-0 rounded-xl p-2 text-slate-600 hover:bg-slate-100 lg:hidden"
+              className="touch-target shrink-0 rounded-xl p-2 text-slate-600 hover:bg-slate-100 lg:hidden"
               onClick={() => setSidebarOpen(true)}
               aria-label="Open menu"
             >
-              <Menu size={20} />
+              <Menu size={22} />
             </button>
             <div className="min-w-0">
               <h1 className="truncate text-sm font-semibold text-surface-900 sm:text-base lg:text-lg">
                 <span className="sm:hidden">{shopName}</span>
                 <span className="hidden sm:inline">Tailor Management System</span>
               </h1>
-              <p className="hidden truncate text-xs text-slate-500 sm:block">Professional shop management</p>
+              <p className="hidden truncate text-xs text-slate-500 sm:block">
+                {shopTypeLabel(shopType)} management{showUrduLabels ? ' — آسان اور تیز' : ''}
+              </p>
             </div>
           </div>
           <div className="hidden items-center gap-2 rounded-full bg-gradient-to-r from-brand-50 to-accent-50 px-3 py-1.5 text-xs font-medium text-brand-700 sm:flex">
@@ -143,10 +186,15 @@ export function Layout() {
             TMS Pro
           </div>
         </header>
-        <main className="app-shell min-h-0 flex-1 overflow-y-auto p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:p-4 lg:p-6">
-          <Outlet />
+        <main
+          ref={mainRef}
+          className="app-shell min-h-0 flex-1 overflow-y-auto p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:p-4 lg:p-6"
+        >
+          <AppBreadcrumb />
+          <Outlet key={`${location.pathname}${location.search}`} />
         </main>
       </div>
     </div>
+    </BreadcrumbProvider>
   )
 }

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { Navigate } from 'react-router-dom'
 import { Plus, Image, Trash2 } from 'lucide-react'
 import { api, getErrorMessage } from '../lib/api'
 import { DEFAULT_PAGE_SIZE, defaultPaginationMeta, listingQueryParams, metaFromPaginated, useDateRangeFilter, useDebouncedSearch } from '../lib/listing'
@@ -13,6 +14,10 @@ import { ListingToolbar } from '../components/ui/ListingToolbar'
 import { Pagination } from '../components/ui/Pagination'
 import { PageScroll } from '../components/ListingPageLayout'
 import { EmptyState, LoadingSpinner } from '../components/ui/Badge'
+import { useZodForm } from '../hooks/useZodForm'
+import { galleryFormSchema } from '../lib/validation'
+import { useShopFeatures } from '../hooks/useShopFeatures'
+import { useToast } from '../context/ToastContext'
 
 export function GalleryPage() {
   const [items, setItems] = useState<GalleryItem[]>([])
@@ -29,23 +34,32 @@ export function GalleryPage() {
   const [saving, setSaving] = useState(false)
   const [form, setForm] = useState({ title: '', description: '', category_id: '' })
   const [image, setImage] = useState<File | null>(null)
+  const { fieldErrors, formError, validate, clearField, setFormError } = useZodForm(galleryFormSchema)
+  const { isModuleEnabled } = useShopFeatures()
+  const showCategories = isModuleEnabled('categories')
+  const { toast, confirm } = useToast()
 
   const load = useCallback(() => {
     setLoading(true)
-    Promise.all([
+    const requests: Promise<unknown>[] = [
       api.get<Paginated<GalleryItem>>('/gallery', {
         params: listingQueryParams(page, perPage, dateRange, {
-          category_id: categoryFilter,
+          category_id: showCategories ? categoryFilter : undefined,
           search: searchQuery,
         }),
       }),
-      api.get<Category[]>('/categories'),
-    ]).then(([itemsRes, catsRes]) => {
-      setItems(itemsRes.data.data)
-      setMeta(metaFromPaginated(itemsRes.data))
-      setCategories(catsRes.data)
+    ]
+    if (showCategories) {
+      requests.push(api.get<Category[]>('/categories'))
+    }
+    Promise.all(requests).then((results) => {
+      setItems((results[0] as { data: Paginated<GalleryItem> }).data.data)
+      setMeta(metaFromPaginated((results[0] as { data: Paginated<GalleryItem> }).data))
+      if (showCategories) {
+        setCategories((results[1] as { data: Category[] }).data)
+      }
     }).finally(() => setLoading(false))
-  }, [page, perPage, dateRange, categoryFilter, searchQuery])
+  }, [page, perPage, dateRange, categoryFilter, searchQuery, showCategories])
 
   useEffect(() => { load() }, [load])
 
@@ -55,13 +69,18 @@ export function GalleryPage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!image) { setError('Please select an image'); return }
+    const data = validate(form)
+    if (!data) return
+    if (!image) {
+      setFormError('Please select an image')
+      return
+    }
     setSaving(true)
     setError('')
     const fd = new FormData()
-    fd.append('title', form.title)
-    fd.append('description', form.description)
-    if (form.category_id) fd.append('category_id', form.category_id)
+    fd.append('title', data.title)
+    fd.append('description', data.description ?? '')
+    if (data.category_id) fd.append('category_id', data.category_id)
     fd.append('image', image)
     try {
       await api.post('/gallery', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
@@ -78,9 +97,24 @@ export function GalleryPage() {
   }
 
   async function handleDelete(id: number) {
-    if (!confirm('Delete this gallery item?')) return
-    await api.delete(`/gallery/${id}`)
-    load()
+    const ok = await confirm({
+      title: 'Delete gallery item?',
+      message: 'This photo will be permanently removed from your gallery.',
+      confirmLabel: 'Delete',
+      variant: 'danger',
+    })
+    if (!ok) return
+    try {
+      await api.delete(`/gallery/${id}`)
+      toast.success('Gallery item deleted')
+      load()
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    }
+  }
+
+  if (!isModuleEnabled('gallery')) {
+    return <Navigate to="/" replace />
   }
 
   return (
@@ -106,6 +140,7 @@ export function GalleryPage() {
           placeholder: 'Search title or description...',
         }}
       >
+        {showCategories && (
         <Select
           className="w-52"
           value={categoryFilter}
@@ -115,6 +150,7 @@ export function GalleryPage() {
             ...categories.map((c) => ({ value: c.id, label: c.name })),
           ]}
         />
+        )}
       </ListingToolbar>
 
       {loading && items.length === 0 ? (
@@ -137,7 +173,7 @@ export function GalleryPage() {
                 </div>
                 <div className="p-3">
                   <h3 className="font-medium">{item.title}</h3>
-                  {item.category && (
+                  {showCategories && item.category && (
                     <span className="mt-1 inline-block rounded-full bg-brand-50 px-2 py-0.5 text-xs text-brand-700">{item.category.name}</span>
                   )}
                 </div>
@@ -153,16 +189,18 @@ export function GalleryPage() {
       )}
 
       <Modal open={modalOpen} onClose={() => setModalOpen(false)} title="Upload to Gallery">
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <Input label="Title" value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} required />
+        <form noValidate onSubmit={handleSubmit} className="space-y-4">
+          <Input label="Title" value={form.title} onChange={(e) => { setForm((f) => ({ ...f, title: e.target.value })); clearField('title') }} error={fieldErrors.title} required />
+          {showCategories && (
           <Select label="Category" value={form.category_id} onChange={(e) => setForm((f) => ({ ...f, category_id: e.target.value }))}
             options={[{ value: '', label: 'Select category...' }, ...categories.map((c) => ({ value: c.id, label: c.name }))]} />
+          )}
           <Textarea label="Description" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} rows={2} />
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Image *</label>
-            <input type="file" accept="image/*" onChange={(e) => setImage(e.target.files?.[0] || null)} className="text-sm" required />
+            <label className="block text-sm font-medium text-slate-700 mb-1">Image <span className="text-red-500">*</span></label>
+            <input type="file" accept="image/*" onChange={(e) => { setImage(e.target.files?.[0] || null); setFormError('') }} className="text-sm" />
           </div>
-          {error && <p className="text-sm text-red-600">{error}</p>}
+          {(error || formError) && <p className="text-sm text-red-600">{error || formError}</p>}
           <div className="flex justify-end gap-2">
             <Button type="button" variant="secondary" onClick={() => setModalOpen(false)}>Cancel</Button>
             <Button type="submit" disabled={saving}>{saving ? 'Uploading...' : 'Upload'}</Button>

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Plus, Wallet } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
 import { api, getErrorMessage } from '../lib/api'
@@ -14,10 +14,18 @@ import { Modal } from '../components/ui/Modal'
 import { ListingToolbar } from '../components/ui/ListingToolbar'
 import { Pagination } from '../components/ui/Pagination'
 import { ListingPageLayout, ScrollableTableCard } from '../components/ListingPageLayout'
-import { Badge, EmptyState, formatCurrency, formatDate, LoadingSpinner } from '../components/ui/Badge'
+import { EmptyState, formatCurrency, LoadingSpinner } from '../components/ui/Badge'
+import { useZodForm } from '../hooks/useZodForm'
+import { transactionFormSchema } from '../lib/validation'
+import { useToast } from '../context/ToastContext'
+import { ColumnVisibility } from '../components/ui/ColumnVisibility'
+import { DataTable } from '../components/ui/DataTable'
+import { useTableColumns } from '../hooks/useTableColumns'
+import { createAccountTableColumns } from '../components/tables/accountsTable'
 
 export function AccountsPage() {
   const { user } = useAuth()
+  const { toast, confirm } = useToast()
   const [searchParams] = useSearchParams()
   const currency = user?.shop?.currency || 'PKR'
   const [transactions, setTransactions] = useState<Transaction[]>([])
@@ -36,6 +44,7 @@ export function AccountsPage() {
     type: 'income', amount: '', description: '', category: '', payment_method: 'cash',
     transaction_date: new Date().toISOString().split('T')[0], notes: '',
   })
+  const { fieldErrors, formError, validate, clearField } = useZodForm(transactionFormSchema)
 
   const load = useCallback(() => {
     setLoading(true)
@@ -61,10 +70,12 @@ export function AccountsPage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    const data = validate(form)
+    if (!data) return
     setSaving(true)
     setError('')
     try {
-      await api.post('/transactions', form)
+      await api.post('/transactions', data)
       setModalOpen(false)
       setForm({ type: 'income', amount: '', description: '', category: '', payment_method: 'cash', transaction_date: new Date().toISOString().split('T')[0], notes: '' })
       setPage(1)
@@ -77,10 +88,28 @@ export function AccountsPage() {
   }
 
   async function handleDelete(id: number) {
-    if (!confirm('Delete this transaction?')) return
-    await api.delete(`/transactions/${id}`)
-    load()
+    const ok = await confirm({
+      title: 'Delete transaction?',
+      message: 'This entry will be permanently removed from your accounts.',
+      confirmLabel: 'Delete',
+      variant: 'danger',
+    })
+    if (!ok) return
+    try {
+      await api.delete(`/transactions/${id}`)
+      toast.success('Transaction deleted')
+      load()
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    }
   }
+
+  const columns = useMemo(
+    () => createAccountTableColumns({ currency, onDelete: handleDelete }),
+    [currency],
+  )
+
+  const table = useTableColumns('accounts', columns)
 
   return (
     <ListingPageLayout
@@ -126,6 +155,18 @@ export function AccountsPage() {
     >
       <ScrollableTableCard
         loading={loading && transactions.length > 0}
+        columnControls={
+          transactions.length > 0 ? (
+            <ColumnVisibility
+              columns={table.columnMeta}
+              visibility={table.visibility}
+              onToggle={table.toggleColumn}
+              onReset={table.resetColumns}
+              visibleCount={table.visibleCount}
+              totalCount={table.totalCount}
+            />
+          ) : undefined
+        }
         empty={
           loading && transactions.length === 0 ? (
             <LoadingSpinner />
@@ -137,42 +178,21 @@ export function AccountsPage() {
           <Pagination meta={meta} onPageChange={setPage} onPerPageChange={(n) => { setPerPage(n); setPage(1) }} />
         }
       >
-        <table className="table-premium table-sticky-head w-full text-sm">
-          <thead>
-            <tr className="border-b border-slate-100 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
-              <th className="px-5 py-3">Date</th>
-              <th className="px-5 py-3">Description</th>
-              <th className="px-5 py-3">Category</th>
-              <th className="px-5 py-3">Type</th>
-              <th className="px-5 py-3">Amount</th>
-              <th className="px-5 py-3"></th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-50">
-            {transactions.map((tx) => (
-              <tr key={tx.id} className="hover:bg-slate-50/80">
-                <td className="px-5 py-3">{formatDate(tx.transaction_date)}</td>
-                <td className="px-5 py-3">{tx.description}</td>
-                <td className="px-5 py-3 text-slate-500">{tx.category || '—'}</td>
-                <td className="px-5 py-3"><Badge status={tx.type} /></td>
-                <td className={`px-5 py-3 font-medium ${tx.type === 'income' ? 'text-emerald-600' : 'text-red-600'}`}>
-                  {tx.type === 'income' ? '+' : '-'}{formatCurrency(tx.amount, currency)}
-                </td>
-                <td className="px-5 py-3">
-                  <Button size="sm" variant="danger" onClick={() => handleDelete(tx.id)}>Delete</Button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <DataTable
+          columns={table.visibleColumns}
+          data={transactions}
+          rowKey={(tx) => tx.id}
+          minWidth={Math.max(640, table.visibleCount * 120)}
+          stickyHead
+        />
       </ScrollableTableCard>
 
       <Modal open={modalOpen} onClose={() => setModalOpen(false)} title="Add Transaction">
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <Select label="Type" value={form.type} onChange={(e) => setForm((f) => ({ ...f, type: e.target.value }))}
+        <form noValidate onSubmit={handleSubmit} className="space-y-4">
+          <Select label="Type" value={form.type} onChange={(e) => setForm((f) => ({ ...f, type: e.target.value as 'income' | 'expense' }))}
             options={[{ value: 'income', label: 'Income' }, { value: 'expense', label: 'Expense' }]} />
-          <Input label="Amount" type="number" step="0.01" value={form.amount} onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value }))} required />
-          <Input label="Description" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} required />
+          <Input label="Amount" type="number" step="0.01" placeholder="e.g. 5000" value={form.amount} onChange={(e) => { setForm((f) => ({ ...f, amount: e.target.value })); clearField('amount') }} error={fieldErrors.amount} required />
+          <Input label="Description" placeholder="What is this transaction for?" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
           <Input label="Category" value={form.category} onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))} placeholder="e.g. Fabric, Rent, Order Payment" />
           <div className="grid gap-4 sm:grid-cols-2">
             <Select label="Payment Method" value={form.payment_method} onChange={(e) => setForm((f) => ({ ...f, payment_method: e.target.value }))}
@@ -182,10 +202,10 @@ export function AccountsPage() {
                 { value: 'bank', label: 'Bank Transfer' },
                 { value: 'other', label: 'Other' },
               ]} />
-            <Input label="Date" type="date" value={form.transaction_date} onChange={(e) => setForm((f) => ({ ...f, transaction_date: e.target.value }))} required />
+            <Input label="Date" type="date" value={form.transaction_date} onChange={(e) => { setForm((f) => ({ ...f, transaction_date: e.target.value })); clearField('transaction_date') }} error={fieldErrors.transaction_date} required />
           </div>
           <Textarea label="Notes" value={form.notes} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))} rows={2} />
-          {error && <p className="text-sm text-red-600">{error}</p>}
+          {(error || formError) && <p className="text-sm text-red-600">{error || formError}</p>}
           <div className="flex justify-end gap-2">
             <Button type="button" variant="secondary" onClick={() => setModalOpen(false)}>Cancel</Button>
             <Button type="submit" disabled={saving}>{saving ? 'Saving...' : 'Save'}</Button>

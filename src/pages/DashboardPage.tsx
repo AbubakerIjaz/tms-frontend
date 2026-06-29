@@ -1,6 +1,9 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Users, ClipboardList, Package, TrendingUp, TrendingDown, Sparkles } from 'lucide-react'
+import {
+  Users, ClipboardList, Package, TrendingUp, TrendingDown, Sparkles,
+  Plus, UserPlus, Wallet, Shirt, Mic,
+} from 'lucide-react'
 import { api } from '../lib/api'
 import { clientOrderUrl } from '../lib/navigation'
 import {
@@ -12,6 +15,7 @@ import {
   useDateRangeFilter,
 } from '../lib/listing'
 import { useAuth } from '../context/AuthContext'
+import { useShopFeatures } from '../hooks/useShopFeatures'
 import type { DashboardData } from '../types'
 import { Card, CardBody, CardHeader } from '../components/ui/Card'
 import { DateRangeFilter } from '../components/ui/DateRangeFilter'
@@ -35,10 +39,31 @@ function dueSectionTitle(range: DateRange) {
 export function DashboardPage() {
   const navigate = useNavigate()
   const { user } = useAuth()
+  const { isModuleEnabled, showUrduLabels } = useShopFeatures()
   const { dateRange, setDateRange } = useDateRangeFilter(currentMonthRange())
   const [data, setData] = useState<DashboardData | null>(null)
   const [loading, setLoading] = useState(true)
   const currency = user?.shop?.currency || 'PKR'
+
+  const quickActions = useMemo(() => {
+    const actions: { label: string; labelUr: string; icon: LucideIcon; to: string; color: string }[] = []
+    if (isModuleEnabled('clients')) {
+      actions.push({ label: 'Add Client', labelUr: 'نیا گاہک', icon: UserPlus, to: '/clients?action=new', color: 'from-brand-500 to-brand-600' })
+    }
+    if (isModuleEnabled('orders')) {
+      actions.push({ label: 'New Order', labelUr: 'نیا آرڈر', icon: Plus, to: '/orders?action=new', color: 'from-emerald-500 to-emerald-600' })
+    }
+    if (isModuleEnabled('accounts')) {
+      actions.push({ label: 'Add Income', labelUr: 'آمدن', icon: Wallet, to: '/accounts?action=new&type=income', color: 'from-accent-500 to-accent-600' })
+    }
+    if (isModuleEnabled('voiceMeasurements')) {
+      actions.push({ label: 'Voice Nap', labelUr: 'آواز سے ناپ', icon: Mic, to: '/voice-measurements', color: 'from-violet-500 to-brand-600' })
+    }
+    if (isModuleEnabled('designs')) {
+      actions.push({ label: 'Designs', labelUr: 'ڈیزائن', icon: Shirt, to: '/designs', color: 'from-violet-500 to-violet-600' })
+    }
+    return actions
+  }, [isModuleEnabled])
 
   const load = useCallback(() => {
     setLoading(true)
@@ -56,37 +81,47 @@ export function DashboardPage() {
   if (!data) return null
 
   const stats: { label: string; value: string | number; icon: LucideIcon; to: string }[] = [
-    { label: 'Total Clients', value: data.stats.total_clients, icon: Users, to: buildFilteredUrl('/clients', dateRange) },
-    {
-      label: 'Pending Orders',
-      value: data.stats.pending_orders,
-      icon: ClipboardList,
-      to: buildFilteredUrl('/orders', dateRange, { status: 'pending,in_progress' }),
-    },
-    {
-      label: 'Ready to Deliver',
-      value: data.stats.ready_orders,
-      icon: Package,
-      to: buildFilteredUrl('/orders', dateRange, { status: 'ready' }),
-    },
-    {
-      label: 'Income',
-      value: formatCurrency(data.stats.month_income, currency),
-      icon: TrendingUp,
-      to: buildFilteredUrl('/accounts', dateRange, { type: 'income' }),
-    },
-    {
-      label: 'Expense',
-      value: formatCurrency(data.stats.month_expense, currency),
-      icon: TrendingDown,
-      to: buildFilteredUrl('/accounts', dateRange, { type: 'expense' }),
-    },
-    {
-      label: 'Profit',
-      value: formatCurrency(data.stats.month_profit, currency),
-      icon: TrendingUp,
-      to: buildFilteredUrl('/accounts', dateRange),
-    },
+    ...(isModuleEnabled('clients')
+      ? [{ label: 'Total Clients', value: data.stats.total_clients, icon: Users, to: buildFilteredUrl('/clients', dateRange) }]
+      : []),
+    ...(isModuleEnabled('orders')
+      ? [
+          {
+            label: 'Pending Orders',
+            value: data.stats.pending_orders,
+            icon: ClipboardList,
+            to: buildFilteredUrl('/orders', dateRange, { status: 'pending,in_progress' }),
+          },
+          {
+            label: 'Ready to Deliver',
+            value: data.stats.ready_orders,
+            icon: Package,
+            to: buildFilteredUrl('/orders', dateRange, { status: 'ready' }),
+          },
+        ]
+      : []),
+    ...(isModuleEnabled('accounts')
+      ? [
+          {
+            label: 'Income',
+            value: formatCurrency(data.stats.month_income, currency),
+            icon: TrendingUp,
+            to: buildFilteredUrl('/accounts', dateRange, { type: 'income' }),
+          },
+          {
+            label: 'Expense',
+            value: formatCurrency(data.stats.month_expense, currency),
+            icon: TrendingDown,
+            to: buildFilteredUrl('/accounts', dateRange, { type: 'expense' }),
+          },
+          {
+            label: 'Profit',
+            value: formatCurrency(data.stats.month_profit, currency),
+            icon: TrendingUp,
+            to: buildFilteredUrl('/accounts', dateRange),
+          },
+        ]
+      : []),
   ]
 
   const periodHint = formatDateRangeLabel(dateRange) || 'all time'
@@ -113,6 +148,33 @@ export function DashboardPage() {
           label="Overview period"
         />
       </div>
+
+      {quickActions.length > 0 && (
+        <div>
+          <h3 className="mb-3 text-sm font-semibold text-slate-700">
+            Quick Actions
+            {showUrduLabels && (
+              <span className="font-normal text-slate-400" dir="rtl"> — فوری کام</span>
+            )}
+          </h3>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            {quickActions.map((action) => (
+              <button
+                key={action.to}
+                type="button"
+                onClick={() => navigate(action.to)}
+                className={`flex flex-col items-center gap-2 rounded-2xl bg-gradient-to-br ${action.color} p-4 text-white shadow-md transition-all hover:-translate-y-0.5 hover:shadow-lg active:scale-[0.98] touch-target`}
+              >
+                <action.icon size={28} strokeWidth={2} />
+                <span className="text-sm font-semibold">{action.label}</span>
+                {showUrduLabels && (
+                  <span className="text-[10px] opacity-80" dir="rtl">{action.labelUr}</span>
+                )}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className={`grid gap-4 sm:grid-cols-2 lg:grid-cols-3 ${loading ? 'opacity-60' : ''}`}>
         {stats.map((stat, i) => (

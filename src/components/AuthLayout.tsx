@@ -1,15 +1,18 @@
 import { type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { Scissors } from 'lucide-react'
+import type { BreadcrumbItem } from '../lib/breadcrumbs'
+import { Breadcrumb } from './ui/Breadcrumb'
 
 interface AuthLayoutProps {
   children: ReactNode
   title: string
   subtitle: string
   footer: ReactNode
+  breadcrumbs?: BreadcrumbItem[]
 }
 
-export function AuthLayout({ children, title, subtitle, footer }: AuthLayoutProps) {
+export function AuthLayout({ children, title, subtitle, footer, breadcrumbs }: AuthLayoutProps) {
   return (
     <div className="flex min-h-[100dvh] flex-col lg:flex-row">
       <div className="auth-brand-panel hidden w-1/2 flex-col justify-between overflow-hidden p-12 lg:flex">
@@ -69,6 +72,11 @@ export function AuthLayout({ children, title, subtitle, footer }: AuthLayoutProp
       <div className="flex flex-1 flex-col items-center justify-center bg-gradient-to-br from-surface-50 via-white to-brand-50/50 px-4 py-6 sm:px-6 sm:py-10 lg:p-10">
         <div className="w-full max-w-md">
           <div className="card-premium rounded-2xl border border-slate-200/80 p-6 shadow-xl shadow-brand-900/5 sm:p-8 lg:p-10">
+            {breadcrumbs && breadcrumbs.length > 0 && (
+              <div className="mb-5 rounded-lg border border-slate-100 bg-slate-50/80 px-3 py-2">
+                <Breadcrumb items={breadcrumbs} />
+              </div>
+            )}
             <div className="mb-6 text-center sm:mb-8 lg:text-left">
               <h1 className="text-xl font-bold text-surface-900 sm:text-2xl">{title}</h1>
               <p className="mt-1.5 text-sm text-slate-500">{subtitle}</p>

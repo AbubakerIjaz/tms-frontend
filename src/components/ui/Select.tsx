@@ -108,8 +108,13 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(function Select
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [highlightIndex, setHighlightIndex] = useState(0)
-  const [menuStyle, setMenuStyle] = useState({
-    top: 0,
+  const [menuStyle, setMenuStyle] = useState<{
+    top?: number
+    bottom?: number
+    left: number
+    width: number
+    maxHeight: number
+  }>({
     left: 0,
     width: 0,
     maxHeight: 280,
@@ -141,14 +146,24 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(function Select
     const spaceBelow = window.innerHeight - rect.bottom - viewportPadding
     const spaceAbove = rect.top - viewportPadding
     const preferBelow = spaceBelow >= 120 || spaceBelow >= spaceAbove
-    const maxHeight = Math.min(280, preferBelow ? spaceBelow - gap : spaceAbove - gap)
 
-    setMenuStyle({
-      top: preferBelow ? rect.bottom + gap : rect.top - gap - Math.max(120, maxHeight),
-      left: rect.left,
-      width: rect.width,
-      maxHeight: Math.max(120, maxHeight),
-    })
+    if (preferBelow) {
+      setMenuStyle({
+        top: rect.bottom + gap,
+        left: rect.left,
+        width: rect.width,
+        maxHeight: Math.max(120, Math.min(280, spaceBelow - gap)),
+      })
+    } else {
+      // Anchor to the bottom so the menu grows upward from just above the
+      // trigger based on its actual content height (no large empty gap).
+      setMenuStyle({
+        bottom: window.innerHeight - rect.top + gap,
+        left: rect.left,
+        width: rect.width,
+        maxHeight: Math.max(120, Math.min(280, spaceAbove - gap)),
+      })
+    }
   }, [])
 
   const close = useCallback(() => {
@@ -277,6 +292,7 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(function Select
           style={{
             position: 'fixed',
             top: menuStyle.top,
+            bottom: menuStyle.bottom,
             left: menuStyle.left,
             width: menuStyle.width,
             zIndex: 9999,
@@ -366,7 +382,8 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(function Select
           setOpen((prev) => !prev)
         }}
         onKeyDown={handleTriggerKeyDown}
-        className={`flex items-center justify-between gap-2 border font-medium outline-none transition-all duration-200 focus:ring-4 disabled:cursor-not-allowed disabled:opacity-50 ${fullWidth ? 'w-full' : 'w-auto min-w-[4.5rem]'} ${toneClasses[tone]} ${sizeClasses[size]} ${error ? 'border-red-400 focus:border-red-400 focus:ring-red-100/80' : ''} ${!selectedOption && placeholder ? 'text-slate-400' : ''}`}
+        aria-invalid={error ? true : undefined}
+        className={`flex items-center justify-between gap-2 border font-medium outline-none transition-all duration-200 focus:ring-4 disabled:cursor-not-allowed disabled:opacity-50 ${fullWidth ? 'w-full' : 'w-auto min-w-[4.5rem]'} ${error ? 'border-red-400 bg-red-50/40 text-slate-700 hover:border-red-400 focus:border-red-400 focus:ring-red-100/80' : toneClasses[tone]} ${sizeClasses[size]} ${!selectedOption && placeholder ? 'text-slate-400' : ''}`}
       >
         <span className="truncate text-left">{displayLabel}</span>
         <ChevronDown
@@ -374,17 +391,6 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(function Select
           className={`shrink-0 text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`}
         />
       </button>
-
-      {required && (
-        <input
-          tabIndex={-1}
-          aria-hidden
-          className="sr-only"
-          value={currentValue}
-          required={required}
-          onChange={() => {}}
-        />
-      )}
 
       {error && <p className="text-xs text-red-600">{error}</p>}
       {menu}

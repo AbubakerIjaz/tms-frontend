@@ -82,6 +82,8 @@ export interface Design {
   image_url: string | null
   is_active: boolean
   garment_type?: GarmentType
+  is_locked?: boolean
+  orders_count?: number
 }
 
 export interface Category {
@@ -123,6 +125,33 @@ export interface Order {
   client?: Client
   design?: Design
   garment_type?: GarmentType
+  images?: OrderImage[]
+  items?: OrderItem[]
+  items_count?: number
+}
+
+export interface OrderImage {
+  id: number
+  image_url: string
+  sort_order?: number
+}
+
+export interface OrderItem {
+  id?: number
+  design_id: number | null
+  garment_type_id: number | null
+  label: string | null
+  notes?: string | null
+  design?: Design
+  garment_type?: GarmentType
+}
+
+export interface OrderSuitDraft {
+  key: string
+  label: string
+  design_id: string
+  garment_type_id: string
+  design?: Design | null
 }
 
 export interface Transaction {

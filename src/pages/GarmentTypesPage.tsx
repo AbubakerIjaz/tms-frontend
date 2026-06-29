@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { Navigate } from 'react-router-dom'
 import { Plus, Trash2 } from 'lucide-react'
 import { api, getErrorMessage } from '../lib/api'
 import { DEFAULT_PAGE_SIZE, defaultPaginationMeta, listingQueryParams, metaFromPaginated, useDateRangeFilter, useDebouncedSearch } from '../lib/listing'
@@ -11,6 +12,10 @@ import { ListingToolbar } from '../components/ui/ListingToolbar'
 import { Pagination } from '../components/ui/Pagination'
 import { PageScroll } from '../components/ListingPageLayout'
 import { LoadingSpinner } from '../components/ui/Badge'
+import { useZodForm } from '../hooks/useZodForm'
+import { garmentTypeFormSchema } from '../lib/validation'
+import { useShopFeatures } from '../hooks/useShopFeatures'
+import { useToast } from '../context/ToastContext'
 
 export function GarmentTypesPage() {
   const [types, setTypes] = useState<GarmentType[]>([])
@@ -25,6 +30,9 @@ export function GarmentTypesPage() {
   const [saving, setSaving] = useState(false)
   const [name, setName] = useState('')
   const [fields, setFields] = useState([{ key: '', label: '' }])
+  const { fieldErrors, formError, validate, clearField } = useZodForm(garmentTypeFormSchema)
+  const { isModuleEnabled } = useShopFeatures()
+  const { toast, confirm } = useToast()
 
   const load = useCallback(() => {
     setLoading(true)
@@ -54,11 +62,13 @@ export function GarmentTypesPage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    const data = validate({ name })
+    if (!data) return
     setSaving(true)
     setError('')
     const measurement_fields = fields.filter((f) => f.key && f.label)
     try {
-      await api.post('/garment-types', { name, measurement_fields })
+      await api.post('/garment-types', { name: data.name, measurement_fields })
       setModalOpen(false)
       setName('')
       setFields([{ key: '', label: '' }])
@@ -72,9 +82,28 @@ export function GarmentTypesPage() {
   }
 
   async function handleDelete(id: number) {
-    if (!confirm('Delete this garment type?')) return
-    await api.delete(`/garment-types/${id}`)
-    load()
+    const ok = await confirm({
+      title: 'Delete garment type?',
+      message: 'This type and its measurement fields will be permanently removed.',
+      confirmLabel: 'Delete',
+      variant: 'danger',
+    })
+    if (!ok) return
+    try {
+      await api.delete(`/garment-types/${id}`)
+      toast.success('Garment type deleted')
+      load()
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    }
+  }
+
+  if (!isModuleEnabled('garmentTypes')) {
+    return <Navigate to="/" replace />
+  }
+
+  if (!isModuleEnabled('garmentTypes')) {
+    return <Navigate to="/" replace />
   }
 
   return (
@@ -137,8 +166,8 @@ export function GarmentTypesPage() {
       )}
 
       <Modal open={modalOpen} onClose={() => setModalOpen(false)} title="Add Garment Type" size="lg">
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <Input label="Name" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Suit, Kurta, Dress" required />
+        <form noValidate onSubmit={handleSubmit} className="space-y-4">
+          <Input label="Name" value={name} onChange={(e) => { setName(e.target.value); clearField('name') }} error={fieldErrors.name} placeholder="e.g. Suit, Kurta, Dress" required />
           <div>
             <div className="mb-2 flex items-center justify-between">
               <label className="text-sm font-medium text-slate-700">Measurement Fields</label>
@@ -153,7 +182,7 @@ export function GarmentTypesPage() {
               ))}
             </div>
           </div>
-          {error && <p className="text-sm text-red-600">{error}</p>}
+          {(error || formError) && <p className="text-sm text-red-600">{error || formError}</p>}
           <div className="flex justify-end gap-2">
             <Button type="button" variant="secondary" onClick={() => setModalOpen(false)}>Cancel</Button>
             <Button type="submit" disabled={saving}>{saving ? 'Saving...' : 'Save'}</Button>
