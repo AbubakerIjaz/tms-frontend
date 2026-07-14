@@ -4,7 +4,7 @@ import {
   Users, ClipboardList, Package, TrendingUp, TrendingDown, Sparkles,
   Plus, UserPlus, Wallet, Shirt, Mic,
 } from 'lucide-react'
-import { api } from '../lib/api'
+import { api, getErrorMessage } from '../lib/api'
 import { clientOrderUrl } from '../lib/navigation'
 import {
   buildFilteredUrl,
@@ -17,9 +17,13 @@ import {
 import { useAuth } from '../context/AuthContext'
 import { useShopFeatures } from '../hooks/useShopFeatures'
 import type { DashboardData } from '../types'
+import { Button } from '../components/ui/Button'
 import { Card, CardBody, CardHeader } from '../components/ui/Card'
 import { DateRangeFilter } from '../components/ui/DateRangeFilter'
 import { Badge, formatCurrency, formatDate, LoadingSpinner } from '../components/ui/Badge'
+import { Input } from '../components/ui/Input'
+import { Select } from '../components/ui/Select'
+import { useToast } from '../context/ToastContext'
 import type { LucideIcon } from 'lucide-react'
 import type { DateRange } from '../lib/listing'
 
@@ -43,7 +47,13 @@ export function DashboardPage() {
   const { dateRange, setDateRange } = useDateRangeFilter(currentMonthRange())
   const [data, setData] = useState<DashboardData | null>(null)
   const [loading, setLoading] = useState(true)
+  const [accountType, setAccountType] = useState<'income' | 'expense'>('income')
+  const [accountAmount, setAccountAmount] = useState('')
+  const [accountCategory, setAccountCategory] = useState('')
+  const [accountDescription, setAccountDescription] = useState('')
+  const [savingAccount, setSavingAccount] = useState(false)
   const currency = user?.shop?.currency || 'PKR'
+  const { toast } = useToast()
 
   const quickActions = useMemo(() => {
     const actions: { label: string; labelUr: string; icon: LucideIcon; to: string; color: string }[] = []
@@ -76,6 +86,35 @@ export function DashboardPage() {
   useEffect(() => {
     load()
   }, [load])
+
+  async function submitAccountEntry(event: React.FormEvent) {
+    event.preventDefault()
+    if (!accountAmount || Number(accountAmount) <= 0) {
+      toast.error('Enter a valid amount')
+      return
+    }
+    setSavingAccount(true)
+    try {
+      await api.post('/transactions', {
+        type: accountType,
+        amount: Number(accountAmount),
+        description: accountDescription,
+        category: accountCategory,
+        payment_method: 'cash',
+        transaction_date: new Date().toISOString().split('T')[0],
+      })
+      setAccountAmount('')
+      setAccountDescription('')
+      setAccountCategory('')
+      setAccountType('income')
+      toast.success('Transaction added')
+      load()
+    } catch (err) {
+      toast.error(getErrorMessage(err))
+    } finally {
+      setSavingAccount(false)
+    }
+  }
 
   if (loading && !data) return <LoadingSpinner />
   if (!data) return null
@@ -174,6 +213,55 @@ export function DashboardPage() {
             ))}
           </div>
         </div>
+      )}
+
+      {isModuleEnabled('accounts') && (
+        <Card>
+          <CardHeader title="Quick income / expense" />
+          <CardBody>
+            <form noValidate onSubmit={submitAccountEntry} className="grid gap-4 sm:grid-cols-4">
+              <Select
+                label="Type"
+                value={accountType}
+                onChange={(e) => setAccountType(e.target.value as 'income' | 'expense')}
+                options={[
+                  { value: 'income', label: 'Income' },
+                  { value: 'expense', label: 'Expense' },
+                ]}
+                className="sm:col-span-1"
+              />
+              <Input
+                label="Amount"
+                type="number"
+                min="0"
+                step="0.01"
+                value={accountAmount}
+                onChange={(e) => setAccountAmount(e.target.value)}
+                required
+                className="sm:col-span-1"
+              />
+              <Input
+                label="Category"
+                placeholder="Optional"
+                value={accountCategory}
+                onChange={(e) => setAccountCategory(e.target.value)}
+                className="sm:col-span-1"
+              />
+              <Input
+                label="Description"
+                placeholder="Short note"
+                value={accountDescription}
+                onChange={(e) => setAccountDescription(e.target.value)}
+                className="sm:col-span-1"
+              />
+              <div className="sm:col-span-4 flex justify-end">
+                <Button type="submit" disabled={savingAccount}>
+                  {savingAccount ? 'Saving...' : 'Add transaction'}
+                </Button>
+              </div>
+            </form>
+          </CardBody>
+        </Card>
       )}
 
       <div className={`grid gap-4 sm:grid-cols-2 lg:grid-cols-3 ${loading ? 'opacity-60' : ''}`}>

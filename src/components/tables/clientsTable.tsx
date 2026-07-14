@@ -9,7 +9,7 @@ export function createClientTableColumns(options: {
   showOrders?: boolean
   showSizes?: boolean
 }): TableColumnDef<Client>[] {
-  const { rowFrom, genderLabel, showOrders = true, showSizes = true } = options
+  const { genderLabel, showOrders = true, showSizes = true } = options
 
   const columns: TableColumnDef<Client>[] = [
     {
@@ -17,7 +17,7 @@ export function createClientTableColumns(options: {
       label: '#',
       headerClassName: 'w-12',
       cellClassName: 'text-slate-400',
-      cell: (_client, index) => (rowFrom ?? 1) + index,
+      cell: (_client, rowNumber) => rowNumber,
     },
     {
       id: 'name',

@@ -1,4 +1,5 @@
 import { type ReactNode } from 'react'
+import { useShopFeatures } from '../hooks/useShopFeatures'
 
 interface ListingPageLayoutProps {
   header: ReactNode
@@ -35,12 +36,17 @@ export function ScrollableTableCard({
   empty,
   children,
 }: ScrollableTableCardProps) {
+  const { listCardColors } = useShopFeatures()
+  const wrapperClass = listCardColors
+    ? 'card-premium flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl'
+    : 'flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm'
+
   if (empty) {
-    return <div className="card-premium flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl">{empty}</div>
+    return <div className={wrapperClass}>{empty}</div>
   }
 
   return (
-    <div className="card-premium flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl">
+    <div className={wrapperClass}>
       {toolbar && (
         <div className="shrink-0 border-b border-slate-100 bg-white/80 p-4">{toolbar}</div>
       )}

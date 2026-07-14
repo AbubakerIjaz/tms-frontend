@@ -26,7 +26,7 @@ export function Modal({ open, onClose, title, children, size = 'md' }: ModalProp
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center p-0 sm:items-center sm:p-4">
-      <div className="absolute inset-0 bg-surface-950/60 backdrop-blur-sm" onClick={onClose} />
+      <div className="absolute inset-0 bg-surface-950/60 backdrop-blur-sm" />
       <div
         className={`relative flex max-h-[92dvh] w-full flex-col overflow-hidden rounded-t-2xl border border-slate-200/80 bg-white shadow-2xl shadow-brand-900/10 sm:max-h-[90vh] sm:rounded-2xl ${sizes[size]}`}
       >

@@ -41,6 +41,12 @@ export interface Client {
   gender: 'male' | 'female' | 'other' | null
   notes: string | null
   orders_count?: number
+  total_orders_count?: number
+  pending_orders_count?: number
+  ready_orders_count?: number
+  delivered_orders_count?: number
+  paid_orders_count?: number
+  unpaid_orders_count?: number
   stitching_sizes_count?: number
   measurements_count?: number
   measurements?: ClientMeasurement[]
@@ -180,6 +186,16 @@ export interface DashboardData {
   }
   recent_orders: Order[]
   upcoming_due: Order[]
+}
+
+export interface OrdersResponse extends Paginated<Order> {
+  summary: {
+    total_amount: number
+    paid_amount: number
+    pending_amount: number
+    paid_orders: number
+    pending_orders: number
+  }
 }
 
 export interface TransactionsResponse extends Paginated<Transaction> {

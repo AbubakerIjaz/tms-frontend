@@ -1,9 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link, Navigate } from 'react-router-dom'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Link, Navigate, useNavigate } from 'react-router-dom'
 import { ExternalLink, Phone, Ruler, User } from 'lucide-react'
 import { api } from '../lib/api'
 import {
-  DEFAULT_PAGE_SIZE,
   defaultPaginationMeta,
   listingQueryParams,
   metaFromPaginated,
@@ -15,10 +14,26 @@ import type { StitchingSize } from '../types/stitching'
 import { useAuth } from '../context/AuthContext'
 import { useShopFeatures } from '../hooks/useShopFeatures'
 import { ListingToolbar } from '../components/ui/ListingToolbar'
-import { Pagination } from '../components/ui/Pagination'
 import { PageScroll } from '../components/ListingPageLayout'
 import { EmptyState, formatDate, LoadingSpinner } from '../components/ui/Badge'
+import { Button } from '../components/ui/Button'
 import { Modal } from '../components/ui/Modal'
+import { Input } from '../components/ui/Input'
+import { Select } from '../components/ui/Select'
+import { SectionsEditor, sectionsToPayload } from '../components/DynamicFieldsEditor'
+import type { MeasurementSection } from '../components/DynamicFieldsEditor'
+import { useZodForm } from '../hooks/useZodForm'
+import { stitchingCreateSchema } from '../lib/validation/schemas'
+
+const RECORD_CARD_COLORS = [
+  '#eff6ff',
+  '#ecfdf5',
+  '#fef3c7',
+  '#fff1f2',
+  '#f5f3ff',
+  '#fffbeb',
+  '#eef2ff',
+]
 
 function sectionFieldCount(record: StitchingSize): number {
   return record.sections.reduce(
@@ -27,39 +42,133 @@ function sectionFieldCount(record: StitchingSize): number {
   )
 }
 
+function cardBackgroundColor(id: number) {
+  return RECORD_CARD_COLORS[id % RECORD_CARD_COLORS.length]
+}
+
+function orderCounts(client?: StitchingSize['client']) {
+  if (!client) {
+    return null
+  }
+
+  return {
+    total: client.total_orders_count ?? client.orders_count ?? 0,
+    pending: client.pending_orders_count ?? 0,
+    ready: client.ready_orders_count ?? 0,
+    delivered: client.delivered_orders_count ?? 0,
+    paid: client.paid_orders_count ?? 0,
+    unpaid: client.unpaid_orders_count ?? 0,
+  }
+}
+
 export function MeasurementsPage() {
+  const navigate = useNavigate()
   const { user } = useAuth()
-  const { isModuleEnabled, showUrduLabels } = useShopFeatures()
+  const { isModuleEnabled, showUrduLabels, measurementCardColors } = useShopFeatures()
   const unit = user?.shop?.measurement_unit ?? 'inch'
   const [records, setRecords] = useState<StitchingSize[]>([])
-  const [meta, setMeta] = useState(defaultPaginationMeta())
+  const [meta, setMeta] = useState(defaultPaginationMeta(20))
   const { searchInput, setSearchInput, searchQuery } = useDebouncedSearch()
   const { dateRange, setDateRange } = useDateRangeFilter()
   const [page, setPage] = useState(1)
-  const [perPage, setPerPage] = useState(DEFAULT_PAGE_SIZE)
+  const perPage = 20
   const [loading, setLoading] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [selected, setSelected] = useState<StitchingSize | null>(null)
+  const [clientMeasurements, setClientMeasurements] = useState<StitchingSize[] | null>(null)
+  const [clientMeasurementsLoading, setClientMeasurementsLoading] = useState(false)
+  const bottomSentinelRef = useRef<HTMLDivElement | null>(null)
+  const [showAddModal, setShowAddModal] = useState(false)
+  const [clients, setClients] = useState<any[]>([])
+  
+  const [adding, setAdding] = useState(false)
+  const [addError, setAddError] = useState('')
+  const [addForm, setAddForm] = useState({ client_id: '', label: '', standard_size: '', measured_at: new Date().toISOString().slice(0,10), sections: [{ name: 'Kameez', rows: [{ key: '', value: '' }] }] as MeasurementSection[] })
+  const addValidation = useZodForm(stitchingCreateSchema)
 
-  const load = useCallback(() => {
-    setLoading(true)
-    api
-      .get<Paginated<StitchingSize>>('/stitching-sizes', {
-        params: listingQueryParams(page, perPage, dateRange, { search: searchQuery }),
-      })
-      .then((res) => {
-        setRecords(res.data.data)
-        setMeta(metaFromPaginated(res.data))
-      })
-      .finally(() => setLoading(false))
-  }, [page, perPage, dateRange, searchQuery])
+  const canLoadMore = meta.current_page < meta.last_page
+
+  const loadPage = useCallback(
+    (pageToLoad: number) => {
+      if (pageToLoad === 1) {
+        setLoading(true)
+      } else {
+        setLoadingMore(true)
+      }
+
+      api
+        .get<Paginated<StitchingSize>>('/stitching-sizes', {
+          params: listingQueryParams(pageToLoad, perPage, dateRange, { search: searchQuery }),
+        })
+        .then((res) => {
+          setMeta(metaFromPaginated(res.data))
+          setRecords((prev) =>
+            pageToLoad === 1 ? res.data.data : [...prev, ...res.data.data],
+          )
+        })
+        .finally(() => {
+          if (pageToLoad === 1) {
+            setLoading(false)
+          } else {
+            setLoadingMore(false)
+          }
+        })
+    },
+    [dateRange, perPage, searchQuery],
+  )
 
   useEffect(() => {
-    load()
-  }, [load])
+    loadPage(page)
+  }, [loadPage, page])
+
+  useEffect(() => {
+    if (!showAddModal) return
+    // fetch clients and presets for the add modal
+    api.get('/clients', { params: { per_page: 200, sort: 'name' } }).then((res) => setClients(res.data.data || res.data)).catch(() => setClients([]))
+  }, [showAddModal])
+
+  useEffect(() => {
+    if (!selected) {
+      setClientMeasurements(null)
+      return
+    }
+
+    setClientMeasurementsLoading(true)
+    api
+      .get<Paginated<StitchingSize>>('/stitching-sizes', { params: { client_id: selected.client_id, per_page: 100 } })
+      .then((res) => {
+        const measurements = res.data.data.slice()
+        measurements.sort((a, b) => (a.id === selected.id ? -1 : b.id === selected.id ? 1 : 0))
+        setClientMeasurements(measurements)
+      })
+      .catch(() => setClientMeasurements(null))
+      .finally(() => setClientMeasurementsLoading(false))
+  }, [selected])
 
   useEffect(() => {
     setPage(1)
+    setRecords([])
+    setMeta(defaultPaginationMeta(20))
   }, [searchQuery, dateRange.from, dateRange.to])
+
+  useEffect(() => {
+    if (!bottomSentinelRef.current || loading || loadingMore || !canLoadMore) {
+      return
+    }
+
+    const observer = new IntersectionObserver((entries) => {
+      if (entries[0].isIntersecting) {
+        setPage((current) => Math.min(current + 1, meta.last_page))
+      }
+    }, {
+      root: null,
+      rootMargin: '200px',
+      threshold: 0.1,
+    })
+
+    observer.observe(bottomSentinelRef.current)
+    return () => observer.disconnect()
+  }, [bottomSentinelRef, loading, loadingMore, canLoadMore, meta.last_page])
 
   const hasFilters = Boolean(searchQuery || dateRange.from || dateRange.to)
 
@@ -75,19 +184,34 @@ export function MeasurementsPage() {
   return (
     <PageScroll>
       <div className="space-y-4 pb-2">
-        <div className="flex items-start gap-3">
-          <div className="flex size-12 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-brand-500 to-brand-700 text-white shadow-md">
-            <Ruler size={22} />
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex items-start gap-3">
+            <div className="flex size-12 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-brand-500 to-brand-700 text-white shadow-md">
+              <Ruler size={22} />
+            </div>
+            <div>
+              <h2 className="page-heading">Measurements</h2>
+              <p className="page-subtitle">
+                {meta.total > 0
+                  ? `${meta.total.toLocaleString()} measurement records`
+                  : showUrduLabels
+                    ? 'گاہکوں کے ناپ دیکھیں اور منظم کریں'
+                    : 'View and manage client stitching measurements'}
+              </p>
+            </div>
           </div>
-          <div>
-            <h2 className="page-heading">Measurements</h2>
-            <p className="page-subtitle">
-              {meta.total > 0
-                ? `${meta.total.toLocaleString()} measurement records`
-                : showUrduLabels
-                  ? 'گاہکوں کے ناپ دیکھیں اور منظم کریں'
-                  : 'View and manage client stitching measurements'}
-            </p>
+          <div className="flex shrink-0 items-center gap-2">
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setAddForm((f) => ({ ...f, measured_at: new Date().toISOString().slice(0, 10) }))
+                addValidation.clearErrors()
+                setAddError('')
+                setShowAddModal(true)
+              }}
+            >
+              Add Measurement
+            </Button>
           </div>
         </div>
 
@@ -116,78 +240,44 @@ export function MeasurementsPage() {
           />
         ) : (
           <>
-            <div className={`grid gap-4 sm:grid-cols-2 xl:grid-cols-3 ${loading ? 'opacity-60' : ''}`}>
-              {records.map((record) => {
-                const fieldCount = sectionFieldCount(record)
-                return (
+            <div className="relative" aria-busy={loading || loadingMore}>
+              <div className={`grid gap-4 sm:grid-cols-2 xl:grid-cols-3 ${loading ? 'opacity-60 pointer-events-none' : ''}`}>
+                {records.map((record) => (
                   <button
                     key={record.id}
                     type="button"
                     onClick={() => setSelected(record)}
-                    className="card-premium group flex flex-col rounded-2xl p-4 text-left transition-all hover:-translate-y-0.5 hover:shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-400"
+                    className="flex w-full flex-col rounded-xl border border-slate-200 bg-white p-4 text-left focus:outline-none hover:bg-white hover:border-slate-200"
+                    style={measurementCardColors ? { backgroundColor: cardBackgroundColor(record.id) } : undefined}
                   >
-                    <div className="mb-3 flex items-start justify-between gap-2">
-                      <div className="flex min-w-0 items-center gap-2">
-                        <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-brand-50 text-brand-600">
+                    <div className="mb-3 flex items-start justify-between gap-3">
+                      <div className="flex min-w-0 items-start gap-3">
+                        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/60 text-brand-600">
                           <Ruler size={16} />
                         </span>
                         <div className="min-w-0">
-                          <p className="truncate font-semibold text-slate-900">
-                            {record.label || 'Measurement'}
-                          </p>
-                          <p className="text-xs text-slate-400">{formatDate(record.measured_at)}</p>
+                          <p className="truncate text-sm font-semibold text-slate-900">{record.client?.name || 'Unknown client'}</p>
+                          <p className="truncate text-xs text-slate-500">{record.label || 'Measurement'}</p>
+                          <p className="mt-1 text-xs text-slate-400">{formatDate(record.measured_at)}</p>
                         </div>
                       </div>
-                      {record.standard_size && (
-                        <span className="shrink-0 rounded-full bg-brand-50 px-2 py-0.5 text-xs font-semibold text-brand-700">
-                          Size {record.standard_size}
-                        </span>
-                      )}
+                      <div className="flex shrink-0 items-center gap-2">
+                        {record.standard_size && (
+                          <span className="rounded-full bg-white/70 px-3 py-1 text-xs font-semibold text-brand-700">Size {record.standard_size}</span>
+                        )}
+                      </div>
                     </div>
 
-                    <div className="mb-3 flex items-center gap-1.5 text-sm text-slate-600">
-                      <User size={14} className="shrink-0 text-slate-400" />
-                      <span className="truncate font-medium">
-                        {record.client?.name || 'Unknown client'}
-                      </span>
-                    </div>
-
-                    <div className="mt-auto flex flex-wrap gap-1.5">
-                      {record.sections.slice(0, 3).map((section, i) => (
-                        <span
-                          key={i}
-                          className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600"
-                        >
-                          {section.name}
-                        </span>
-                      ))}
-                      {record.sections.length > 3 && (
-                        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-500">
-                          +{record.sections.length - 3}
-                        </span>
-                      )}
-                    </div>
-
-                    <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-3 text-xs text-slate-400">
-                      <span>
-                        {record.sections.length} section{record.sections.length === 1 ? '' : 's'} · {fieldCount} field
-                        {fieldCount === 1 ? '' : 's'}
-                      </span>
-                      <span className="font-medium text-brand-600 group-hover:underline">View details</span>
-                    </div>
+                    {/* card simplified: only client, label, date, size */}
                   </button>
-                )
-              })}
+                ))}
+              </div>
+              <div className="mt-4 rounded-2xl border border-slate-200 bg-white/80 p-4 text-sm text-slate-600 shadow-sm">
+                Showing {records.length.toLocaleString()} of {meta.total.toLocaleString()} measurements
+                {loadingMore && ' — loading more...'}
+              </div>
+              <div ref={bottomSentinelRef} className="h-4" />
             </div>
-
-            <Pagination
-              meta={meta}
-              onPageChange={setPage}
-              onPerPageChange={(n) => {
-                setPerPage(n)
-                setPage(1)
-              }}
-            />
           </>
         )}
       </div>
@@ -231,24 +321,70 @@ export function MeasurementsPage() {
               </div>
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-2">
-              {selected.sections.map((section, i) => (
-                <div key={i} className="rounded-xl border border-slate-200 bg-white p-4">
-                  <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-brand-700">
-                    {section.name}
-                  </p>
-                  <div className="grid grid-cols-2 gap-2">
-                    {Object.entries(section.measurements).map(([key, val]) => (
-                      <div key={key} className="rounded-lg bg-slate-50 px-2.5 py-2">
-                        <p className="text-xs text-slate-500">{key}</p>
-                        <p className="text-sm font-semibold text-slate-900">
-                          {val} <span className="text-xs font-normal text-slate-400">{unit}</span>
-                        </p>
-                      </div>
-                    ))}
+            {(() => {
+              const counts = orderCounts(selected.client)
+              if (!counts || counts.total === 0) return null
+
+              return (
+                <div className="mt-3 grid grid-cols-3 gap-2">
+                  <div className="flex items-center gap-2 rounded-lg bg-white/80 px-3 py-2 text-sm font-semibold text-slate-700">
+                    Orders <span className="ml-auto text-slate-800">{counts.total}</span>
+                  </div>
+                  <div className="flex items-center gap-2 rounded-lg bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800">
+                    Pending <span className="ml-auto text-amber-900">{counts.pending}</span>
+                  </div>
+                  <div className="flex items-center gap-2 rounded-lg bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800">
+                    Paid <span className="ml-auto text-emerald-900">{counts.paid}</span>
+                  </div>
+                  <div className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700">
+                    Ready <span className="ml-auto text-slate-800">{counts.ready}</span>
+                  </div>
+                  <div className="flex items-center gap-2 rounded-lg bg-emerald-50/80 px-3 py-2 text-sm font-semibold text-emerald-700">
+                    Delivered <span className="ml-auto text-emerald-800">{counts.delivered}</span>
+                  </div>
+                  <div className="flex items-center gap-2 rounded-lg bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">
+                    Unpaid <span className="ml-auto text-rose-800">{counts.unpaid}</span>
                   </div>
                 </div>
-              ))}
+              )
+            })()}
+
+            <div className="mt-4">
+              <h4 className="mb-2 text-sm font-semibold text-slate-700">Measurements for {selected.client?.name}</h4>
+              {clientMeasurementsLoading ? (
+                <LoadingSpinner />
+              ) : clientMeasurements && clientMeasurements.length ? (
+                <div className="space-y-3">
+                  {clientMeasurements.map((m) => (
+                    <div key={m.id} className="rounded-lg border border-slate-200 bg-white p-3">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="text-base font-semibold text-slate-900">{m.label || 'Measurement'}</p>
+                          <p className="text-xs text-slate-500">Measured on {formatDate(m.measured_at)}</p>
+                        </div>
+                        <div className="text-xs text-slate-500">{m.sections.length} section{m.sections.length === 1 ? '' : 's'}</div>
+                      </div>
+                      <div className="mt-2 grid gap-2">
+                        {m.sections.map((s, i) => (
+                          <div key={i} className="rounded-md bg-slate-50 p-2 text-sm">
+                            <div className="mb-1 text-sm font-semibold text-brand-700">{s.name}</div>
+                            <div className="grid grid-cols-2 gap-2">
+                              {Object.entries(s.measurements).map(([k, v]) => (
+                                <div key={k} className="rounded-md bg-white/80 p-2 text-sm">
+                                  <div className="text-slate-700 font-semibold">{k}</div>
+                                  <div className="font-semibold text-slate-900">{v} {unit}</div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-slate-500">No measurements for this client.</p>
+              )}
             </div>
 
             {selected.notes && (
@@ -258,7 +394,7 @@ export function MeasurementsPage() {
               </div>
             )}
 
-            <div className="flex justify-end">
+            <div className="flex flex-wrap justify-between gap-2">
               <Link
                 to={`/clients/${selected.client_id}`}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 transition hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700"
@@ -266,9 +402,119 @@ export function MeasurementsPage() {
                 <ExternalLink size={15} />
                 Open client profile
               </Link>
+              <Button
+                variant="secondary"
+                onClick={() => navigate(`/orders?create_order=1&client_id=${selected.client_id}`)}
+              >
+                Place order
+              </Button>
             </div>
           </div>
         )}
+      </Modal>
+
+      <Modal
+        open={showAddModal}
+        onClose={() => { setShowAddModal(false); setAddError('') }}
+        title="Add Measurement"
+        size="lg"
+      >
+        <div className="space-y-4">
+          {adding && <LoadingSpinner />}
+          {addError && <div className="rounded-xl bg-red-50 p-3 text-sm text-red-700">{addError}</div>}
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <Select
+                label="Client"
+                options={clients.map((c) => ({ value: String(c.id), label: `${c.name}${c.phone ? ` — ${c.phone}` : ''}` }))}
+                value={addForm.client_id}
+                onChange={(e) => { setAddForm((f) => ({ ...f, client_id: e.target.value })); addValidation.clearField('client_id') }}
+                error={addValidation.fieldErrors.client_id}
+                placeholder="Select a client"
+                searchable
+              />
+            </div>
+            <div>
+              <Input
+                label="Measured at"
+                type="date"
+                value={addForm.measured_at}
+                disabled
+                onChange={() => { /* disabled field kept for parity */ addValidation.clearField('measured_at') }}
+                error={addValidation.fieldErrors.measured_at}
+                required
+              />
+            </div>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <Input
+                label="Label"
+                value={addForm.label}
+                onChange={(e) => setAddForm((f) => ({ ...f, label: e.target.value }))}
+                error={addValidation.fieldErrors.label}
+                required
+              />
+            </div>
+            <div>
+              <Select
+                label="Standard size"
+                options={[{ value: '', label: 'None' }, { value: 'S', label: 'S' }, { value: 'M', label: 'M' }, { value: 'L', label: 'L' }, { value: 'XL', label: 'XL' }]}
+                value={addForm.standard_size}
+                onChange={(e) => setAddForm((f) => ({ ...f, standard_size: e.target.value }))}
+                placeholder="None"
+              />
+            </div>
+          </div>
+
+          <div className="rounded-xl border p-3">
+            <SectionsEditor
+              sections={addForm.sections}
+              onChange={(sections) => setAddForm((f) => ({ ...f, sections }))}
+              unit={user?.shop?.measurement_unit}
+              singleSection
+            />
+          </div>
+          {(addValidation.fieldErrors.sections || addValidation.formError) && (
+            <p className="text-sm text-red-600">{addValidation.fieldErrors.sections || addValidation.formError}</p>
+          )}
+
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => { setShowAddModal(false); setAddError(''); addValidation.clearErrors() }}>Cancel</Button>
+            <Button onClick={async () => {
+              setAddError('')
+              const validated = addValidation.validate({
+                client_id: addForm.client_id,
+                label: addForm.label,
+                standard_size: addForm.standard_size,
+                measured_at: addForm.measured_at,
+                sections: addForm.sections,
+              })
+              if (!validated) return
+              const payload = {
+                client_id: addForm.client_id,
+                label: addForm.label || null,
+                standard_size: addForm.standard_size || null,
+                measured_at: addForm.measured_at,
+                sections: sectionsToPayload(addForm.sections),
+              }
+              setAdding(true)
+              try {
+                await api.post('/stitching-sizes', payload)
+                setShowAddModal(false)
+                // reload first page
+                loadPage(1)
+              } catch (err) {
+                const e: any = err
+                setAddError(String(e?.response?.data?.message || e?.message || 'Failed to add measurement'))
+              } finally {
+                setAdding(false)
+              }
+            }}>Save</Button>
+          </div>
+        </div>
       </Modal>
     </PageScroll>
   )

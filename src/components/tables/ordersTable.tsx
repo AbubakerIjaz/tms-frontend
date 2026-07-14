@@ -21,6 +21,8 @@ interface OrderTableOptions {
   showPaid?: boolean
   showDesigns?: boolean
   showGarmentTypes?: boolean
+  updatingStatusIds?: Set<number>
+  updatingPaymentIds?: Set<number>
 }
 
 export function createOrderTableColumns(options: OrderTableOptions): TableColumnDef<Order>[] {
@@ -37,6 +39,8 @@ export function createOrderTableColumns(options: OrderTableOptions): TableColumn
     showPaid = false,
     showDesigns = true,
     showGarmentTypes = true,
+    updatingStatusIds,
+    updatingPaymentIds,
   } = options
 
   const columns: TableColumnDef<Order>[] = [
@@ -164,35 +168,47 @@ export function createOrderTableColumns(options: OrderTableOptions): TableColumn
       id: 'status',
       label: 'Status',
       cell: (order) => (
-        <Select
-          size="sm"
-          className="min-w-[120px]"
-          value={order.status}
-          onChange={(e) => onUpdateStatus(order, e.target.value)}
-          searchable={false}
-          options={['pending', 'in_progress', 'ready', 'delivered', 'cancelled'].map((s) => ({
-            value: s,
-            label: s.replace('_', ' '),
-          }))}
-        />
+        <div className="inline-flex items-center gap-2">
+          <Select
+            size="sm"
+            className="min-w-[120px]"
+            value={order.status}
+            onChange={(e) => onUpdateStatus(order, e.target.value)}
+            searchable={false}
+            disabled={Boolean(updatingStatusIds && updatingStatusIds.has(order.id))}
+            options={['pending', 'in_progress', 'ready', 'delivered', 'cancelled'].map((s) => ({
+              value: s,
+              label: s.replace('_', ' '),
+            }))}
+          />
+          {updatingStatusIds && updatingStatusIds.has(order.id) && (
+            <div className="h-4 w-4 animate-spin rounded-full border-2 border-slate-200 border-t-brand-600" />
+          )}
+        </div>
       ),
     },
     {
       id: 'payment',
       label: 'Payment',
       cell: (order) => (
-        <Select
-          size="sm"
-          className="min-w-[110px]"
-          tone={order.payment_status === 'paid' ? 'success' : 'warning'}
-          value={order.payment_status || 'pending'}
-          onChange={(e) => onUpdatePaymentStatus(order, e.target.value as 'paid' | 'pending')}
-          searchable={false}
-          options={[
-            { value: 'pending', label: 'Pending' },
-            { value: 'paid', label: 'Paid' },
-          ]}
-        />
+        <div className="inline-flex items-center gap-2">
+          <Select
+            size="sm"
+            className="min-w-[110px]"
+            tone={order.payment_status === 'paid' ? 'success' : 'warning'}
+            value={order.payment_status || 'pending'}
+            onChange={(e) => onUpdatePaymentStatus(order, e.target.value as 'paid' | 'pending')}
+            searchable={false}
+            disabled={Boolean(updatingPaymentIds && updatingPaymentIds.has(order.id))}
+            options={[
+              { value: 'pending', label: 'Pending' },
+              { value: 'paid', label: 'Paid' },
+            ]}
+          />
+          {updatingPaymentIds && updatingPaymentIds.has(order.id) && (
+            <div className="h-4 w-4 animate-spin rounded-full border-2 border-slate-200 border-t-brand-600" />
+          )}
+        </div>
       ),
     },
     {

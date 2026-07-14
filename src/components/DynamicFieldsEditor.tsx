@@ -116,9 +116,10 @@ interface SectionsEditorProps {
   sections: MeasurementSection[]
   onChange: (sections: MeasurementSection[]) => void
   unit?: string
+  singleSection?: boolean
 }
 
-export function SectionsEditor({ sections, onChange, unit }: SectionsEditorProps) {
+export function SectionsEditor({ sections, onChange, unit, singleSection }: SectionsEditorProps) {
   function updateSection(index: number, patch: Partial<MeasurementSection>) {
     onChange(sections.map((s, i) => (i === index ? { ...s, ...patch } : s)))
   }
@@ -135,21 +136,23 @@ export function SectionsEditor({ sections, onChange, unit }: SectionsEditorProps
     <div className="space-y-4">
       {sections.map((section, index) => (
         <div key={index} className="rounded-lg border border-slate-200 p-4 space-y-3">
-          <div className="flex items-end gap-2">
-            <div className="flex-1">
-              <Input
-                label="Section name"
-                value={section.name}
-                onChange={(e) => updateSection(index, { name: e.target.value })}
-                placeholder="e.g. Kameez, Shalwar, Coat"
-              />
+          {!singleSection ? (
+            <div className="flex items-end gap-2">
+              <div className="flex-1">
+                <Input
+                  label="Section name"
+                  value={section.name}
+                  onChange={(e) => updateSection(index, { name: e.target.value })}
+                  placeholder="e.g. Kameez, Shalwar, Coat"
+                />
+              </div>
+              {sections.length > 1 && (
+                <Button type="button" size="sm" variant="danger" onClick={() => removeSection(index)}>
+                  Remove
+                </Button>
+              )}
             </div>
-            {sections.length > 1 && (
-              <Button type="button" size="sm" variant="danger" onClick={() => removeSection(index)}>
-                Remove
-              </Button>
-            )}
-          </div>
+          ) : null}
           <DynamicFieldsEditor
             rows={section.rows}
             onChange={(rows) => updateSection(index, { rows })}
@@ -157,9 +160,11 @@ export function SectionsEditor({ sections, onChange, unit }: SectionsEditorProps
           />
         </div>
       ))}
-      <Button type="button" size="sm" variant="secondary" onClick={addSection}>
-        <Plus size={16} /> Add section (e.g. Shalwar, Dupatta)
-      </Button>
+      {!singleSection ? (
+        <Button type="button" size="sm" variant="secondary" onClick={addSection}>
+          <Plus size={16} /> Add section (e.g. Shalwar, Dupatta)
+        </Button>
+      ) : null}
     </div>
   )
 }

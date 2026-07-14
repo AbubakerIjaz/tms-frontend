@@ -178,18 +178,20 @@ body {
 
 /* Premium cards */
 .card-premium {
-  background: linear-gradient(135deg, #ffffff 0%, #fafbff 100%);
-  border: 1px solid rgba(226, 232, 240, 0.9);
+  background: linear-gradient(135deg, #eef2ff 0%, #fff7ed 45%, #fefce8 100%);
+  border: 1px solid rgba(226, 232, 240, 0.95);
   box-shadow:
-    0 1px 2px rgba(15, 23, 42, 0.04),
-    0 4px 16px rgba(99, 102, 241, 0.04);
-  transition: box-shadow 0.2s ease, transform 0.2s ease;
+    0 1px 2px rgba(15, 23, 42, 0.05),
+    0 6px 18px rgba(99, 102, 241, 0.08);
+  transition: box-shadow 0.2s ease, transform 0.2s ease, border-color 0.2s ease;
 }
 
 .card-premium:hover {
+  transform: translateY(-1px);
+  border-color: rgba(167, 180, 252, 0.9);
   box-shadow:
-    0 4px 8px rgba(15, 23, 42, 0.06),
-    0 8px 24px rgba(99, 102, 241, 0.08);
+    0 8px 16px rgba(15, 23, 42, 0.08),
+    0 12px 28px rgba(99, 102, 241, 0.12);
 }
 
 /* Gradient buttons */

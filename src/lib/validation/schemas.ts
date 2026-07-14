@@ -132,10 +132,28 @@ export const galleryFormSchema = z.object({
 })
 
 export const stitchingFormSchema = z.object({
-  label: z.string().optional(),
+  label: z.string().trim().min(1, 'Label is required'),
   standard_size: z.string().optional(),
   measured_at: requiredDate('Measured date'),
   notes: z.string().optional(),
+})
+
+export const measurementFieldSchema = z.object({
+  key: z.string().trim().min(1, 'Field name is required'),
+  value: z.string().optional(),
+})
+
+export const measurementSectionSchema = z.object({
+  name: z.string().optional(),
+  rows: z.array(measurementFieldSchema).min(1, 'Add at least one field'),
+})
+
+export const stitchingCreateSchema = z.object({
+  client_id: z.string().trim().min(1, 'Client is required'),
+  label: z.string().trim().min(1, 'Label is required'),
+  standard_size: z.string().optional(),
+  measured_at: requiredDate('Measured date'),
+  sections: z.array(measurementSectionSchema).min(1, 'Add at least one section'),
 })
 
 export const voiceClientSchema = z.object({

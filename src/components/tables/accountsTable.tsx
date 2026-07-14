@@ -1,5 +1,7 @@
+import { Link } from 'react-router-dom'
 import type { TableColumnDef } from '../../hooks/useTableColumns'
 import type { Transaction } from '../../types'
+import { clientOrderUrl } from '../../lib/navigation'
 import { Badge, formatCurrency, formatDate } from '../ui/Badge'
 import { ActionMenu } from '../ui/ActionMenu'
 
@@ -19,7 +21,25 @@ export function createAccountTableColumns(options: {
       id: 'description',
       label: 'Description',
       required: true,
-      cell: (tx) => tx.description,
+      cell: (tx) => {
+        if (tx.client_id && tx.order_id) {
+          return (
+            <Link to={clientOrderUrl(tx.client_id, tx.order_id)} className="font-medium text-brand-600 hover:underline">
+              {tx.description}
+            </Link>
+          )
+        }
+
+        if (tx.client_id) {
+          return (
+            <Link to={`/clients/${tx.client_id}`} className="font-medium text-brand-600 hover:underline">
+              {tx.description}
+            </Link>
+          )
+        }
+
+        return tx.description
+      },
     },
     {
       id: 'category',

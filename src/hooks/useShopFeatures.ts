@@ -23,6 +23,8 @@ export function useShopFeatures() {
     modules: features.modules,
     email: features.email,
     showUrduLabels: features.urduLabels,
+    listCardColors: features.listCardColors,
+    measurementCardColors: features.measurementCardColors,
     isModuleEnabled,
   }
 }

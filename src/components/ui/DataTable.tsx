@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import type { TableColumnDef } from '../../hooks/useTableColumns'
+import { useShopFeatures } from '../../hooks/useShopFeatures'
 
 const alignClass = {
   left: 'text-left',
@@ -82,12 +83,17 @@ export function ListingTableCard({
   pagination,
   children,
 }: ListingTableCardProps) {
+  const { listCardColors } = useShopFeatures()
+  const wrapperClass = listCardColors
+    ? 'card-premium overflow-hidden rounded-xl'
+    : 'rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden'
+
   if (empty) {
-    return <div className="card-premium overflow-hidden rounded-xl">{empty}</div>
+    return <div className={wrapperClass}>{empty}</div>
   }
 
   return (
-    <div className="card-premium overflow-hidden rounded-xl">
+    <div className={wrapperClass}>
       {columnControls && (
         <div className="flex items-center justify-end border-b border-slate-100 bg-white/80 px-4 py-2.5">
           {columnControls}

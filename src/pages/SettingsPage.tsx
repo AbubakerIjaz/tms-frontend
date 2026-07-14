@@ -30,9 +30,13 @@ import {
 } from '../lib/whatsappSettings'
 import {
   emailSettingsToPayload,
+  listCardColorsToPayload,
+  measurementCardColorsToPayload,
   moduleSettingsToPayload,
   MODULE_OPTIONS,
   parseEmailSettings,
+  parseListCardColorSetting,
+  parseMeasurementCardColorSetting,
   parseModuleSettings,
   parseUrduLabelsSetting,
   urduLabelsToPayload,
@@ -104,6 +108,8 @@ export function SettingsPage() {
   })
   const [logo, setLogo] = useState<File | null>(null)
   const [logoPreview, setLogoPreview] = useState<string | null>(null)
+  const [listCardColors, setListCardColors] = useState(true)
+  const [measurementCardColors, setMeasurementCardColors] = useState(true)
   const [profile, setProfile] = useState({ name: '', phone: '', password: '', password_confirmation: '' })
   const shopValidation = useZodForm(shopSettingsFormSchema)
   const profileValidation = useZodForm(profileSettingsFormSchema)
@@ -119,6 +125,8 @@ export function SettingsPage() {
       setShopSettings(s.settings ?? {})
       setModules(parseModuleSettings(s))
       setUrduLabels(parseUrduLabelsSetting(s))
+      setListCardColors(parseListCardColorSetting(s))
+      setMeasurementCardColors(parseMeasurementCardColorSetting(s))
       setEmailSettings(parseEmailSettings(s))
       setWhatsapp(parseWhatsAppSettings(s))
       setLogoPreview(s.logo_url)
@@ -150,7 +158,13 @@ export function SettingsPage() {
     try {
       await api.post('/settings', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
       const settingsRes = await api.put('/settings', {
-        settings: urduLabelsToPayload(shopSettings, urduLabels),
+        settings: measurementCardColorsToPayload(
+          listCardColorsToPayload(
+            urduLabelsToPayload(shopSettings, urduLabels),
+            listCardColors,
+          ),
+          measurementCardColors,
+        ),
       })
       setShopSettings(settingsRes.data.settings ?? {})
       await refreshUser()
@@ -376,6 +390,22 @@ export function SettingsPage() {
                     />
                   </div>
                 </SettingsFieldGroup>
+
+                <FeatureToggle
+                  checked={listCardColors}
+                  onChange={setListCardColors}
+                  label="Colorful listing cards"
+                  description="Use soft pastel cards for listing tables and dashboard summaries."
+                  icon={<Sparkles size={20} />}
+                />
+
+                <FeatureToggle
+                  checked={measurementCardColors}
+                  onChange={setMeasurementCardColors}
+                  label="Colorful measurement cards"
+                  description="Use soft pastel cards for measurement records."
+                  icon={<Sparkles size={20} />}
+                />
 
                 <FeatureToggle
                   checked={urduLabels}

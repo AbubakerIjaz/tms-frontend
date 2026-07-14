@@ -26,6 +26,8 @@ export interface ShopFeatureSettings {
   modules: ShopModuleSettings
   email: ShopEmailSettings
   urduLabels: boolean
+  listCardColors: boolean
+  measurementCardColors: boolean
 }
 
 const MODULE_KEY_MAP: Record<keyof ShopModuleSettings, string> = {
@@ -93,12 +95,24 @@ export function parseUrduLabelsSetting(shop?: Shop | null): boolean {
   return isTruthy(shop?.settings?.urdu_labels_enabled)
 }
 
+export function parseListCardColorSetting(shop?: Shop | null): boolean {
+  const value = shop?.settings?.list_card_colors_enabled
+  return value === undefined ? true : isTruthy(value)
+}
+
 export function parseFeatureSettings(shop?: Shop | null): ShopFeatureSettings {
   return {
     modules: parseModuleSettings(shop),
     email: parseEmailSettings(shop),
     urduLabels: parseUrduLabelsSetting(shop),
+    listCardColors: parseListCardColorSetting(shop),
+    measurementCardColors: parseMeasurementCardColorSetting(shop),
   }
+}
+
+export function parseMeasurementCardColorSetting(shop?: Shop | null): boolean {
+  const value = shop?.settings?.measurement_card_colors_enabled
+  return value === undefined ? true : isTruthy(value)
 }
 
 export function moduleSettingsToPayload(
@@ -135,6 +149,26 @@ export function urduLabelsToPayload(
   return {
     ...current,
     urdu_labels_enabled: enabled,
+  }
+}
+
+export function listCardColorsToPayload(
+  current: Record<string, unknown>,
+  enabled: boolean,
+): Record<string, unknown> {
+  return {
+    ...current,
+    list_card_colors_enabled: enabled,
+  }
+}
+
+export function measurementCardColorsToPayload(
+  current: Record<string, unknown>,
+  enabled: boolean,
+): Record<string, unknown> {
+  return {
+    ...current,
+    measurement_card_colors_enabled: enabled,
   }
 }
 

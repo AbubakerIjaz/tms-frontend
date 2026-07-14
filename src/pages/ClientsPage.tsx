@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Plus, Users, Download } from 'lucide-react'
 import { api, getErrorMessage } from '../lib/api'
 import {
@@ -31,6 +32,7 @@ const emptyClientForm = () => ({ name: '', phone: '', email: '', address: '', ge
 
 export function ClientsPage() {
   const [clients, setClients] = useState<Client[]>([])
+  const navigate = useNavigate()
   const [meta, setMeta] = useState(defaultPaginationMeta(20))
   const { searchInput, setSearchInput, searchQuery } = useDebouncedSearch()
   const { dateRange, setDateRange } = useDateRangeFilter()
@@ -111,12 +113,11 @@ export function ClientsPage() {
     setSaving(true)
     setError('')
     try {
-      await api.post('/clients', data)
+      const res = await api.post<Client>('/clients', data)
       setModalOpen(false)
       setForm(emptyClientForm())
       clearErrors()
-      setPage(1)
-      load()
+      navigate(`/clients/${res.data.id}`)
     } catch (err) {
       setError(getErrorMessage(err))
     } finally {

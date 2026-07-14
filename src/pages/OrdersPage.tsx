@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Plus, ClipboardList } from 'lucide-react'
 import { api, getErrorMessage } from '../lib/api'
 import { createOrderCreatedWhatsAppPrompt, createOrderReadyWhatsAppPrompt } from '../lib/orderWhatsAppNotifications'
@@ -15,7 +15,7 @@ import {
   useDateRangeFilter,
   useDebouncedSearch,
 } from '../lib/listing'
-import type { Client, Design, GarmentType, Order, Paginated } from '../types'
+import type { Client, Design, GarmentType, Order, OrdersResponse, Paginated } from '../types'
 import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
 import { Select } from '../components/ui/Select'
@@ -44,12 +44,14 @@ import { useShopFeatures } from '../hooks/useShopFeatures'
 
 export function OrdersPage() {
   const [searchParams] = useSearchParams()
+  const navigate = useNavigate()
   const { user } = useAuth()
   const currency = user?.shop?.currency || 'PKR'
   const shop = user?.shop
   const whatsAppEnabled = isWhatsAppEnabled(shop)
   const [orders, setOrders] = useState<Order[]>([])
   const [meta, setMeta] = useState(defaultPaginationMeta())
+  const [summary, setSummary] = useState<OrdersResponse['summary'] | null>(null)
   const [clients, setClients] = useState<Client[]>([])
   const [designs, setDesigns] = useState<Design[]>([])
   const [garmentTypes, setGarmentTypes] = useState<GarmentType[]>([])
@@ -60,6 +62,8 @@ export function OrdersPage() {
   const [page, setPage] = useState(1)
   const [perPage, setPerPage] = useState(DEFAULT_PAGE_SIZE)
   const [loading, setLoading] = useState(true)
+  const [updatingStatusIds, setUpdatingStatusIds] = useState<Set<number>>(new Set())
+  const [updatingPaymentIds, setUpdatingPaymentIds] = useState<Set<number>>(new Set())
   const [modalOpen, setModalOpen] = useState(false)
   const [paymentModal, setPaymentModal] = useState<Order | null>(null)
   const [error, setError] = useState('')
@@ -68,7 +72,7 @@ export function OrdersPage() {
   const [whatsAppPrompt, setWhatsAppPrompt] = useState<WhatsAppOrderPrompt | null>(null)
   const [form, setForm] = useState({
     client_id: '', total_amount: '', paid_amount: '',
-    order_date: new Date().toISOString().split('T')[0], due_date: '', notes: '', record_payment: true,
+    order_date: new Date().toISOString().split('T')[0], due_date: '', notes: '', record_payment: false,
   })
   const [suitItems, setSuitItems] = useState<OrderSuitDraft[]>(createDefaultSuitItems)
   const [orderImages, setOrderImages] = useState<File[]>([])
@@ -82,7 +86,7 @@ export function OrdersPage() {
 
   const load = useCallback(() => {
     setLoading(true)
-    api.get<Paginated<Order>>('/orders', {
+    api.get<OrdersResponse>('/orders', {
       params: listingQueryParams(page, perPage, dateRange, {
         status: statusFilter,
         payment_status: paymentFilter,
@@ -92,6 +96,7 @@ export function OrdersPage() {
       .then((res) => {
         setOrders(res.data.data)
         setMeta(metaFromPaginated(res.data))
+        setSummary(res.data.summary ?? null)
       })
       .finally(() => setLoading(false))
   }, [statusFilter, paymentFilter, searchQuery, page, perPage, dateRange])
@@ -102,7 +107,19 @@ export function OrdersPage() {
     setPage(1)
   }, [statusFilter, paymentFilter, searchQuery, dateRange.from, dateRange.to])
 
-  async function openModal() {
+  useEffect(() => {
+    const createOrder = searchParams.get('create_order') === '1'
+    const clientId = searchParams.get('client_id')
+    if (createOrder) {
+      openModal(clientId)
+      const params = new URLSearchParams(searchParams)
+      params.delete('create_order')
+      params.delete('client_id')
+      navigate({ search: params.toString() }, { replace: true })
+    }
+  }, [searchParams, navigate])
+
+  async function openModal(clientId?: string | null) {
     const requests: Promise<unknown>[] = [
       api.get<Paginated<Client>>('/clients', { params: { per_page: 200 } }),
     ]
@@ -128,6 +145,12 @@ export function OrdersPage() {
     setSuitItems(createDefaultSuitItems())
     setOrderImages([])
     setError('')
+    if (clientId) {
+      setForm((f) => ({ ...f, client_id: clientId }))
+      orderValidation.clearField('client_id')
+    } else {
+      setForm((f) => ({ ...f, client_id: '' }))
+    }
     setModalOpen(true)
   }
 
@@ -196,13 +219,31 @@ export function OrdersPage() {
   }
 
   async function updateStatus(order: Order, status: string) {
-    await api.put(`/orders/${order.id}`, { status })
-    const prompt = createOrderReadyWhatsAppPrompt(order, status, shop)
-    if (prompt) setWhatsAppPrompt(prompt)
-    if (viewOrder?.id === order.id) {
-      setViewOrder({ ...viewOrder, status: status as Order['status'] })
+    // mark as updating
+    setUpdatingStatusIds((prev) => {
+      const next = new Set(prev)
+      next.add(order.id)
+      return next
+    })
+
+    try {
+      const res = await api.put<Order>(`/orders/${order.id}`, { status })
+      const updated = res.data
+      const prompt = createOrderReadyWhatsAppPrompt(updated, status, shop)
+      if (prompt) setWhatsAppPrompt(prompt)
+      if (viewOrder?.id === updated.id) {
+        setViewOrder(updated)
+      }
+      setOrders((prev) => prev.map((o) => (o.id === updated.id ? updated : o)))
+    } catch (err) {
+      await load()
+    } finally {
+      setUpdatingStatusIds((prev) => {
+        const next = new Set(prev)
+        next.delete(order.id)
+        return next
+      })
     }
-    load()
   }
 
   function openWhatsAppPrompt(order: Order) {
@@ -216,11 +257,26 @@ export function OrdersPage() {
   }
 
   async function updatePaymentStatus(order: Order, paymentStatus: 'paid' | 'pending') {
-    await api.patch(`/orders/${order.id}/payment-status`, { payment_status: paymentStatus })
-    if (viewOrder?.id === order.id) {
-      setViewOrder({ ...viewOrder, payment_status: paymentStatus })
+    setUpdatingPaymentIds((prev) => {
+      const next = new Set(prev)
+      next.add(order.id)
+      return next
+    })
+
+    try {
+      const res = await api.patch<Order>(`/orders/${order.id}/payment-status`, { payment_status: paymentStatus })
+      const updated = res.data
+      if (viewOrder?.id === updated.id) setViewOrder(updated)
+      setOrders((prev) => prev.map((o) => (o.id === updated.id ? updated : o)))
+    } catch (err) {
+      await load()
+    } finally {
+      setUpdatingPaymentIds((prev) => {
+        const next = new Set(prev)
+        next.delete(order.id)
+        return next
+      })
     }
-    load()
   }
 
   async function recordPayment(e: React.FormEvent) {
@@ -245,6 +301,35 @@ export function OrdersPage() {
     searchQuery || statusFilter || paymentFilter || dateRange.from || dateRange.to,
   )
 
+  const paymentTotals = useMemo(() => {
+    if (summary) {
+      return {
+        total: summary.total_amount,
+        paid: summary.paid_amount,
+        pending: summary.pending_amount,
+        paidOrders: summary.paid_orders,
+        pendingOrders: summary.pending_orders,
+      }
+    }
+
+    return orders.reduce(
+      (totals, order) => {
+        const totalAmount = Number(order.total_amount) || 0
+        const paidAmount = Number(order.paid_amount) || 0
+        totals.total += totalAmount
+        totals.paid += paidAmount
+        totals.pending += Math.max(totalAmount - paidAmount, 0)
+        if (order.payment_status === 'paid') {
+          totals.paidOrders += 1
+        } else {
+          totals.pendingOrders += 1
+        }
+        return totals
+      },
+      { total: 0, paid: 0, pending: 0, paidOrders: 0, pendingOrders: 0 },
+    )
+  }, [orders, summary])
+
   const columns = useMemo(
     () =>
       createOrderTableColumns({
@@ -261,6 +346,8 @@ export function OrdersPage() {
         onWhatsApp: openWhatsAppPrompt,
         showDesigns,
         showGarmentTypes,
+        updatingStatusIds,
+        updatingPaymentIds,
       }),
     [currency, shop, whatsAppEnabled, viewOrder, showDesigns, showGarmentTypes],
   )
@@ -277,7 +364,25 @@ export function OrdersPage() {
             {meta.total > 0 ? `${meta.total.toLocaleString()} orders` : 'Track tailoring orders and deliveries'}
           </p>
         </div>
-        <Button className="w-full sm:w-auto" onClick={openModal}><Plus size={18} /> New Order</Button>
+        <Button className="w-full sm:w-auto" onClick={() => openModal()}><Plus size={18} /> New Order</Button>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-3">
+        <div className="rounded-3xl border border-slate-200 bg-slate-50 p-5 shadow-sm">
+          <p className="text-sm font-medium text-slate-500">Total amount</p>
+          <p className="mt-3 text-3xl font-semibold text-slate-900">{formatCurrency(paymentTotals.total, currency)}</p>
+          <p className="mt-1 text-sm text-slate-500">All orders in current list</p>
+        </div>
+        <div className="rounded-3xl border border-emerald-200 bg-emerald-50/80 p-5 shadow-sm">
+          <p className="text-sm font-medium text-emerald-700">Paid amount</p>
+          <p className="mt-3 text-3xl font-semibold text-emerald-900">{formatCurrency(paymentTotals.paid, currency)}</p>
+          <p className="mt-1 text-sm text-emerald-600">{paymentTotals.paidOrders} paid order{paymentTotals.paidOrders === 1 ? '' : 's'}</p>
+        </div>
+        <div className="rounded-3xl border border-amber-200 bg-amber-50/80 p-5 shadow-sm">
+          <p className="text-sm font-medium text-amber-700">Pending amount</p>
+          <p className="mt-3 text-3xl font-semibold text-amber-900">{formatCurrency(paymentTotals.pending, currency)}</p>
+          <p className="mt-1 text-sm text-amber-600">{paymentTotals.pendingOrders} pending order{paymentTotals.pendingOrders === 1 ? '' : 's'}</p>
+        </div>
       </div>
 
       <ListingToolbar
